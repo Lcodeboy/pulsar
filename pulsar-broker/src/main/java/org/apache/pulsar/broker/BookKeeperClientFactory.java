@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,16 +18,29 @@
  */
 package org.apache.pulsar.broker;
 
-import java.io.IOException;
-
+import io.netty.channel.EventLoopGroup;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import org.apache.bookkeeper.client.BookKeeper;
-import org.apache.pulsar.broker.ServiceConfiguration;
-import org.apache.zookeeper.ZooKeeper;
+import org.apache.bookkeeper.client.EnsemblePlacementPolicy;
+import org.apache.bookkeeper.stats.StatsLogger;
+import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
 
 /**
- * Provider of a new BookKeeper client instance
+ * Provider of a new BookKeeper client instance.
  */
 public interface BookKeeperClientFactory {
-    BookKeeper create(ServiceConfiguration conf, ZooKeeper zkClient) throws IOException;
+    CompletableFuture<BookKeeper> create(ServiceConfiguration conf, MetadataStoreExtended store,
+                                         EventLoopGroup eventLoopGroup,
+                                         Optional<Class<? extends EnsemblePlacementPolicy>> policyClass,
+                                         Map<String, Object> ensemblePlacementPolicyProperties);
+
+    CompletableFuture<BookKeeper> create(ServiceConfiguration conf, MetadataStoreExtended store,
+                                         EventLoopGroup eventLoopGroup,
+                                         Optional<Class<? extends EnsemblePlacementPolicy>> policyClass,
+                                         Map<String, Object> ensemblePlacementPolicyProperties,
+                                         StatsLogger statsLogger);
+
     void close();
 }

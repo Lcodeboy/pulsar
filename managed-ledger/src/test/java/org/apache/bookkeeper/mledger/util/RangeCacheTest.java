@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,29 +19,47 @@
 package org.apache.bookkeeper.mledger.util;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotSame;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
-
 import com.google.common.collect.Lists;
 import io.netty.util.AbstractReferenceCounted;
 import io.netty.util.ReferenceCounted;
+import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import lombok.Cleanup;
+import lombok.Data;
 import org.apache.commons.lang3.tuple.Pair;
+import org.awaitility.Awaitility;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-@Test
 public class RangeCacheTest {
 
-    class RefString extends AbstractReferenceCounted implements ReferenceCounted {
-        final String s;
+    @Data
+    class RefString extends AbstractReferenceCounted implements RangeCache.ValueWithKeyValidation<Integer> {
+        String s;
+        Integer matchingKey;
 
         RefString(String s) {
+            this(s, null);
+        }
+
+        RefString(String s, Integer matchingKey) {
             super();
             this.s = s;
+            this.matchingKey = matchingKey != null ? matchingKey : Integer.parseInt(s);
             setRefCnt(1);
         }
 
         @Override
         protected void deallocate() {
-            // no-op
+            s = null;
         }
 
         @Override
@@ -59,10 +77,15 @@ public class RangeCacheTest {
 
             return false;
         }
+
+        @Override
+        public boolean matchesKey(Integer key) {
+            return matchingKey.equals(key);
+        }
     }
 
     @Test
-    void simple() {
+    public void simple() {
         RangeCache<Integer, RefString> cache = new RangeCache<>();
 
         cache.put(0, new RefString("0"));
@@ -83,7 +106,7 @@ public class RangeCacheTest {
         s1.release();
         s2.release();
 
-        assertEquals(cache.get(2), null);
+        assertNull(cache.get(2));
 
         cache.put(2, new RefString("2"));
         cache.put(8, new RefString("8"));
@@ -110,26 +133,69 @@ public class RangeCacheTest {
     }
 
     @Test
-    void customWeighter() {
-        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length());
+    public void customWeighter() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> 0);
 
-        cache.put(0, new RefString("zero"));
-        cache.put(1, new RefString("one"));
+        cache.put(0, new RefString("zero", 0));
+        cache.put(1, new RefString("one", 1));
 
         assertEquals(cache.getSize(), 7);
         assertEquals(cache.getNumberOfEntries(), 2);
     }
 
+    @DataProvider
+    public static Object[][] retainBeforeEviction() {
+        return new Object[][]{ { true }, { false } };
+    }
+
+
+    @Test(dataProvider = "retainBeforeEviction")
+    public void customTimeExtraction(boolean retain) {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> x.s.length());
+
+        cache.put(1, new RefString("1"));
+        cache.put(22, new RefString("22"));
+        cache.put(333, new RefString("333"));
+        cache.put(4444, new RefString("4444"));
+
+        assertEquals(cache.getSize(), 10);
+        assertEquals(cache.getNumberOfEntries(), 4);
+        final var retainedEntries = cache.getRange(1, 4444);
+        for (final var entry : retainedEntries) {
+            assertEquals(entry.refCnt(), 2);
+            if (!retain) {
+                entry.release();
+            }
+        }
+
+        Pair<Integer, Long> evictedSize = cache.evictLEntriesBeforeTimestamp(3);
+        assertEquals(evictedSize.getRight().longValue(), 6);
+        assertEquals(evictedSize.getLeft().longValue(), 3);
+        assertEquals(cache.getSize(), 4);
+        assertEquals(cache.getNumberOfEntries(), 1);
+
+        if (retain) {
+            final var valueToRefCnt = retainedEntries.stream().collect(Collectors.toMap(RefString::getS,
+                    AbstractReferenceCounted::refCnt));
+            assertEquals(valueToRefCnt, Map.of("1", 1, "22", 1, "333", 1, "4444", 2));
+            retainedEntries.forEach(AbstractReferenceCounted::release);
+        } else {
+            final var valueToRefCnt = retainedEntries.stream().filter(v -> v.refCnt() > 0).collect(Collectors.toMap(
+                    RefString::getS, AbstractReferenceCounted::refCnt));
+            assertEquals(valueToRefCnt, Map.of("4444", 1));
+        }
+    }
+
     @Test
-    void doubleInsert() {
+    public void doubleInsert() {
         RangeCache<Integer, RefString> cache = new RangeCache<>();
 
-        RefString s0 = new RefString("zero");
+        RefString s0 = new RefString("zero", 0);
         assertEquals(s0.refCnt(), 1);
-        assertEquals(cache.put(0, s0), true);
+        assertTrue(cache.put(0, s0));
         assertEquals(s0.refCnt(), 1);
 
-        cache.put(1, new RefString("one"));
+        cache.put(1, new RefString("one", 1));
 
         assertEquals(cache.getSize(), 2);
         assertEquals(cache.getNumberOfEntries(), 2);
@@ -137,9 +203,9 @@ public class RangeCacheTest {
         assertEquals(s.s, "one");
         assertEquals(s.refCnt(), 2);
 
-        RefString s1 = new RefString("uno");
+        RefString s1 = new RefString("uno", 1);
         assertEquals(s1.refCnt(), 1);
-        assertEquals(cache.put(1, s1), false);
+        assertFalse(cache.put(1, s1));
         assertEquals(s1.refCnt(), 1);
         s1.release();
 
@@ -150,7 +216,7 @@ public class RangeCacheTest {
     }
 
     @Test
-    void getRange() {
+    public void getRange() {
         RangeCache<Integer, RefString> cache = new RangeCache<>();
 
         cache.put(0, new RefString("0"));
@@ -171,31 +237,31 @@ public class RangeCacheTest {
     }
 
     @Test
-    void eviction() {
-        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length());
+    public void eviction() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> 0);
 
-        cache.put(0, new RefString("zero"));
-        cache.put(1, new RefString("one"));
-        cache.put(2, new RefString("two"));
-        cache.put(3, new RefString("three"));
+        cache.put(0, new RefString("zero", 0));
+        cache.put(1, new RefString("one", 1));
+        cache.put(2, new RefString("two", 2));
+        cache.put(3, new RefString("three", 3));
 
         // This should remove the LRU entries: 0, 1 whose combined size is 7
         assertEquals(cache.evictLeastAccessedEntries(5), Pair.of(2, (long) 7));
 
         assertEquals(cache.getNumberOfEntries(), 2);
         assertEquals(cache.getSize(), 8);
-        assertEquals(cache.get(0), null);
-        assertEquals(cache.get(1), null);
+        assertNull(cache.get(0));
+        assertNull(cache.get(1));
         assertEquals(cache.get(2).s, "two");
         assertEquals(cache.get(3).s, "three");
 
         assertEquals(cache.evictLeastAccessedEntries(100), Pair.of(2, (long) 8));
         assertEquals(cache.getNumberOfEntries(), 0);
         assertEquals(cache.getSize(), 0);
-        assertEquals(cache.get(0), null);
-        assertEquals(cache.get(1), null);
-        assertEquals(cache.get(2), null);
-        assertEquals(cache.get(3), null);
+        assertNull(cache.get(0));
+        assertNull(cache.get(1));
+        assertNull(cache.get(2));
+        assertNull(cache.get(3));
 
         try {
             cache.evictLeastAccessedEntries(0);
@@ -213,7 +279,7 @@ public class RangeCacheTest {
     }
 
     @Test
-    void evictions() {
+    public void evictions() {
         RangeCache<Integer, RefString> cache = new RangeCache<>();
 
         for (int i = 0; i < 100; i++) {
@@ -246,5 +312,72 @@ public class RangeCacheTest {
         assertEquals((int) res.getLeft(), 10);
         assertEquals((long) res.getRight(), 10);
         assertEquals(cache.getSize(), 90);
+    }
+
+    @Test
+    public void testPutWhileClearIsCalledConcurrently() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> 0);
+        int numberOfThreads = 8;
+        @Cleanup("shutdownNow")
+        ScheduledExecutorService executor = Executors.newScheduledThreadPool(numberOfThreads);
+        for (int i = 0; i < numberOfThreads; i++) {
+            executor.scheduleWithFixedDelay(cache::clear, 0, 1, TimeUnit.MILLISECONDS);
+        }
+        for (int i = 0; i < 200000; i++) {
+            cache.put(i, new RefString(String.valueOf(i)));
+        }
+        executor.shutdown();
+        // ensure that no clear operation got into endless loop
+        Awaitility.await().untilAsserted(() -> assertTrue(executor.isTerminated()));
+        // ensure that clear can be called and all entries are removed
+        cache.clear();
+        assertEquals(cache.getNumberOfEntries(), 0);
+    }
+
+    @Test
+    public void testPutSameObj() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> 0);
+        RefString s0 = new RefString("zero", 0);
+        assertEquals(s0.refCnt(), 1);
+        assertTrue(cache.put(0, s0));
+        assertFalse(cache.put(0, s0));
+    }
+
+    @Test
+    public void testRemoveEntryWithInvalidRefCount() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> 0);
+        RefString value = new RefString("1");
+        cache.put(1, value);
+        // release the value to make the reference count invalid
+        value.release();
+        cache.clear();
+        assertEquals(cache.getNumberOfEntries(), 0);
+    }
+
+    @Test
+    public void testRemoveEntryWithInvalidMatchingKey() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>(value -> value.s.length(), x -> 0);
+        RefString value = new RefString("1");
+        cache.put(1, value);
+        // change the matching key to make it invalid
+        value.setMatchingKey(123);
+        cache.clear();
+        assertEquals(cache.getNumberOfEntries(), 0);
+    }
+
+    @Test
+    public void testGetKeyWithDifferentInstance() {
+        RangeCache<Integer, RefString> cache = new RangeCache<>();
+        Integer key = 129;
+        cache.put(key, new RefString("129"));
+        // create a different instance of the key
+        Integer key2 = Integer.valueOf(129);
+        // key and key2 are different instances but they are equal
+        assertNotSame(key, key2);
+        assertEquals(key, key2);
+        // get the value using key2
+        RefString s = cache.get(key2);
+        // the value should be found
+        assertEquals(s.s, "129");
     }
 }

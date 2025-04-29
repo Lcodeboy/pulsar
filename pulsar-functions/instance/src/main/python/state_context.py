@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -106,9 +105,9 @@ class BKManagedStateContext(StateContext):
 
     def __init__(self, state_storage_serviceurl, table_ns, table_name):
         client_settings = StorageClientSettings(
-          service_uri=state_storage_serviceurl)
+            service_uri=state_storage_serviceurl)
         admin_client = admin.client.Client(
-          storage_client_settings=client_settings)
+            storage_client_settings=client_settings)
         # create namespace and table if needed
         ns = admin_client.namespace(table_ns)
         try:
@@ -126,7 +125,8 @@ class BKManagedStateContext(StateContext):
             ns.create(
                 stream_name=table_name,
                 stream_config=table_conf)
-        self.__client__ = kv.Client(namespace=table_ns)
+        self.__client__ = kv.Client(storage_client_settings=client_settings,
+                                    namespace=table_ns)
         self.__table__ = self.__client__.table(table_name=table_name)
 
     def incr(self, key, amount):
@@ -154,3 +154,6 @@ class BKManagedStateContext(StateContext):
 
     def put(self, key, value):
         return self.__table__.put_str(key, value)
+
+    def delete_key(self, key):
+        return self.__table__.delete_str(key)

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,27 +20,19 @@ package org.apache.pulsar.broker.authentication;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.fail;
-
-import org.testng.annotations.Test;
-import org.testng.annotations.BeforeClass;
-
-import org.apache.bookkeeper.test.PortManager;
-import org.apache.pulsar.broker.authentication.AuthenticationDataCommand;
-import org.apache.pulsar.broker.authentication.AuthenticationDataSource;
-import org.apache.pulsar.broker.authentication.AuthenticationProviderAthenz;
-
+import com.yahoo.athenz.auth.token.RoleToken;
+import com.yahoo.athenz.zpe.ZpeConsts;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Properties;
 import javax.naming.AuthenticationException;
-
-import com.yahoo.athenz.zpe.ZpeConsts;
-import com.yahoo.athenz.auth.token.RoleToken;
 import org.apache.pulsar.broker.ServiceConfiguration;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
 
 public class AuthenticationProviderAthenzTest {
 
@@ -59,7 +51,7 @@ public class AuthenticationProviderAthenzTest {
 
         // Initialize authentication provider
         provider = new AuthenticationProviderAthenz();
-        provider.initialize(config);
+        provider.initialize(AuthenticationProvider.Context.builder().config(config).build());
 
         // Specify Athenz configuration file for AuthZpeClient which is used in AuthenticationProviderAthenz
         System.setProperty(ZpeConsts.ZPE_PROP_ATHENZ_CONF, "./src/test/resources/athenz.conf.test");
@@ -73,7 +65,7 @@ public class AuthenticationProviderAthenzTest {
         emptyConf.setProperties(emptyProp);
         AuthenticationProviderAthenz sysPropProvider1 = new AuthenticationProviderAthenz();
         try {
-            sysPropProvider1.initialize(emptyConf);
+            sysPropProvider1.initialize(AuthenticationProvider.Context.builder().config(emptyConf).build());
             assertEquals(sysPropProvider1.getAllowedOffset(), 30); // default allowed offset is 30 sec
         } catch (Exception e) {
             fail("Fail to Read pulsar.athenz.domain.names from System Properties");
@@ -82,16 +74,16 @@ public class AuthenticationProviderAthenzTest {
         System.setProperty("pulsar.athenz.role.token_allowed_offset", "0");
         AuthenticationProviderAthenz sysPropProvider2 = new AuthenticationProviderAthenz();
         try {
-            sysPropProvider2.initialize(config);
+            sysPropProvider2.initialize(AuthenticationProvider.Context.builder().config(config).build());
             assertEquals(sysPropProvider2.getAllowedOffset(), 0);
         } catch (Exception e) {
-            fail("Failed to get allowd offset from system property");
+            fail("Failed to get allowed offset from system property");
         }
 
         System.setProperty("pulsar.athenz.role.token_allowed_offset", "invalid");
         AuthenticationProviderAthenz sysPropProvider3 = new AuthenticationProviderAthenz();
         try {
-            sysPropProvider3.initialize(config);
+            sysPropProvider3.initialize(AuthenticationProvider.Context.builder().config(config).build());
             fail("Invalid allowed offset should not be specified");
         } catch (IOException e) {
         }
@@ -99,7 +91,7 @@ public class AuthenticationProviderAthenzTest {
         System.setProperty("pulsar.athenz.role.token_allowed_offset", "-1");
         AuthenticationProviderAthenz sysPropProvider4 = new AuthenticationProviderAthenz();
         try {
-            sysPropProvider4.initialize(config);
+            sysPropProvider4.initialize(AuthenticationProvider.Context.builder().config(config).build());
             fail("Negative allowed offset should not be specified");
         } catch (IOException e) {
         }
@@ -117,7 +109,7 @@ public class AuthenticationProviderAthenzTest {
         String privateKey = new String(Files.readAllBytes(Paths.get("./src/test/resources/zts_private.pem")));
         token.sign(privateKey);
         AuthenticationDataSource authData = new AuthenticationDataCommand(token.getSignedToken(),
-                new InetSocketAddress("localhost", PortManager.nextFreePort()), null);
+                new InetSocketAddress("localhost", 0), null);
         assertEquals(provider.authenticate(authData), "test_app");
     }
 
@@ -131,7 +123,7 @@ public class AuthenticationProviderAthenzTest {
         };
         RoleToken token = new RoleToken.Builder("Z1", "test_provider", roles).principal("test_app").build();
         AuthenticationDataSource authData = new AuthenticationDataCommand(token.getUnsignedToken(),
-                new InetSocketAddress("localhost", PortManager.nextFreePort()), null);
+                new InetSocketAddress("localhost", 0), null);
         try {
             provider.authenticate(authData);
             fail("Unsigned token should not be authenticated");
@@ -152,7 +144,7 @@ public class AuthenticationProviderAthenzTest {
         String privateKey = new String(Files.readAllBytes(Paths.get("./src/test/resources/zts_private.pem")));
         token.sign(privateKey);
         AuthenticationDataSource authData = new AuthenticationDataCommand(token.getSignedToken(),
-                new InetSocketAddress("localhost", PortManager.nextFreePort()), null);
+                new InetSocketAddress("localhost", 0), null);
         try {
             provider.authenticate(authData);
             fail("Token which has different domain should not be authenticated");

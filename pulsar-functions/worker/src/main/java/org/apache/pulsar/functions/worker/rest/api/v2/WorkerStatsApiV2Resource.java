@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,12 +22,9 @@ import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiResponse;
 import io.swagger.annotations.ApiResponses;
-import lombok.extern.slf4j.Slf4j;
-import org.apache.pulsar.broker.web.AuthenticationFilter;
-import org.apache.pulsar.common.policies.data.WorkerFunctionInstanceStats;
-import org.apache.pulsar.functions.worker.WorkerService;
-import org.apache.pulsar.functions.worker.rest.api.WorkerImpl;
-
+import java.io.IOException;
+import java.util.List;
+import java.util.function.Supplier;
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
@@ -36,9 +33,14 @@ import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
-import java.io.IOException;
-import java.util.List;
-import java.util.function.Supplier;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.pulsar.broker.authentication.AuthenticationDataSource;
+import org.apache.pulsar.broker.authentication.AuthenticationParameters;
+import org.apache.pulsar.broker.web.AuthenticationFilter;
+import org.apache.pulsar.common.policies.data.WorkerFunctionInstanceStats;
+import org.apache.pulsar.functions.worker.WorkerService;
+import org.apache.pulsar.functions.worker.rest.FunctionApiResource;
+import org.apache.pulsar.functions.worker.service.api.Workers;
 
 @Slf4j
 @Path("/worker-stats")
@@ -49,16 +51,11 @@ public class WorkerStatsApiV2Resource implements Supplier<WorkerService> {
 
     public static final String ATTRIBUTE_WORKERSTATS_SERVICE = "worker-stats";
 
-    protected final WorkerImpl worker;
     private WorkerService workerService;
     @Context
     protected ServletContext servletContext;
     @Context
     protected HttpServletRequest httpRequest;
-
-    public WorkerStatsApiV2Resource() {
-        this.worker = new WorkerImpl(this);
-    }
 
     @Override
     public synchronized WorkerService get() {
@@ -68,6 +65,23 @@ public class WorkerStatsApiV2Resource implements Supplier<WorkerService> {
         return this.workerService;
     }
 
+    Workers<? extends WorkerService> workers() {
+        return get().getWorkers();
+    }
+
+    AuthenticationParameters authParams() {
+        return AuthenticationParameters.builder()
+                .clientRole(clientAppId())
+                .originalPrincipal(httpRequest.getHeader(FunctionApiResource.ORIGINAL_PRINCIPAL_HEADER))
+                .clientAuthenticationDataSource((AuthenticationDataSource)
+                        httpRequest.getAttribute(AuthenticationFilter.AuthenticatedDataAttributeName))
+                .build();
+    }
+
+    /**
+     * @deprecated use {@link AuthenticationParameters} instead
+     */
+    @Deprecated
     public String clientAppId() {
         return httpRequest != null
                 ? (String) httpRequest.getAttribute(AuthenticationFilter.AuthenticatedRoleAttributeName)
@@ -87,7 +101,7 @@ public class WorkerStatsApiV2Resource implements Supplier<WorkerService> {
     })
     @Produces(MediaType.APPLICATION_JSON)
     public List<org.apache.pulsar.common.stats.Metrics> getMetrics() throws Exception {
-        return worker.getWorkerMetrics(clientAppId());
+        return workers().getWorkerMetrics(authParams());
     }
 
     @GET
@@ -103,6 +117,6 @@ public class WorkerStatsApiV2Resource implements Supplier<WorkerService> {
     })
     @Produces(MediaType.APPLICATION_JSON)
     public List<WorkerFunctionInstanceStats> getStats() throws IOException {
-        return worker.getFunctionsMetrics(clientAppId());
+        return workers().getFunctionsMetrics(authParams());
     }
 }

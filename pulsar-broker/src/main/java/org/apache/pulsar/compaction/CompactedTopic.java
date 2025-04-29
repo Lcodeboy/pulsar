@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,13 +18,33 @@
  */
 package org.apache.pulsar.compaction;
 
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import org.apache.bookkeeper.mledger.AsyncCallbacks.ReadEntriesCallback;
+import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.ManagedCursor;
 import org.apache.bookkeeper.mledger.Position;
-import org.apache.bookkeeper.mledger.AsyncCallbacks.ReadEntriesCallback;
+import org.apache.pulsar.broker.service.Consumer;
 
 public interface CompactedTopic {
-    CompletableFuture<?> newCompactedLedger(Position p, long compactedLedgerId);
-    void asyncReadEntriesOrWait(ManagedCursor cursor, int numberOfEntriesToRead,
-                                ReadEntriesCallback callback, Object ctx);
+    CompletableFuture<CompactedTopicContext> newCompactedLedger(Position p, long compactedLedgerId);
+    CompletableFuture<Void> deleteCompactedLedger(long compactedLedgerId);
+
+    /**
+     * Read entries from compacted topic.
+     *
+     * @deprecated Use {@link CompactedTopicUtils#asyncReadCompactedEntries(TopicCompactionService, ManagedCursor,
+     * int, long, org.apache.bookkeeper.mledger.Position, boolean, ReadEntriesCallback, boolean, Consumer)}
+     * instead.
+     */
+    @Deprecated
+    void asyncReadEntriesOrWait(ManagedCursor cursor,
+                                int maxEntries,
+                                long bytesToRead,
+                                Position maxReadPosition,
+                                boolean isFirstRead,
+                                ReadEntriesCallback callback,
+                                Consumer consumer);
+    CompletableFuture<Entry> readLastEntryOfCompactedLedger();
+    Optional<Position> getCompactionHorizon();
 }

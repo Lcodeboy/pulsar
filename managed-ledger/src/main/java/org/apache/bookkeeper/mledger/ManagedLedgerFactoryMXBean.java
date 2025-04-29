@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,9 +18,14 @@
  */
 package org.apache.bookkeeper.mledger;
 
+import org.apache.bookkeeper.common.annotation.InterfaceAudience;
+import org.apache.bookkeeper.common.annotation.InterfaceStability;
+
 /**
  * JMX Bean interface for ManagedLedgerFactory stats.
  */
+@InterfaceAudience.LimitedPrivate
+@InterfaceStability.Stable
 public interface ManagedLedgerFactoryMXBean {
     /**
      * Get the number of currently opened managed ledgers on the factory.
@@ -43,9 +48,19 @@ public interface ManagedLedgerFactoryMXBean {
     double getCacheHitsRate();
 
     /**
+     * Cumulative number of cache hits.
+     */
+    long getCacheHitsTotal();
+
+    /**
      * Get the number of cache misses per second.
      */
     double getCacheMissesRate();
+
+    /**
+     * Cumulative number of cache misses.
+     */
+    long getCacheMissesTotal();
 
     /**
      * Get the amount of data is retrieved from the cache in byte/s.
@@ -53,12 +68,42 @@ public interface ManagedLedgerFactoryMXBean {
     double getCacheHitsThroughput();
 
     /**
+     * Cumulative amount of data retrieved from the cache in bytes.
+     */
+    long getCacheHitsBytesTotal();
+
+    /**
      * Get the amount of data is retrieved from the bookkeeper in byte/s.
      */
     double getCacheMissesThroughput();
 
     /**
+     * Cumulative amount of data retrieved from the bookkeeper in bytes.
+     */
+    long getCacheMissesBytesTotal();
+
+    /**
      * Get the number of cache evictions during the last minute.
      */
     long getNumberOfCacheEvictions();
+
+    /**
+     * Cumulative number of cache evictions.
+     */
+    long getNumberOfCacheEvictionsTotal();
+
+    /**
+     * Cumulative number of entries inserted into the cache.
+     */
+    long getCacheInsertedEntriesCount();
+
+    /**
+     * Cumulative number of entries evicted from the cache.
+     */
+    long getCacheEvictedEntriesCount();
+
+    /**
+     * Current number of entries in the cache.
+     */
+    long getCacheEntriesCount();
 }

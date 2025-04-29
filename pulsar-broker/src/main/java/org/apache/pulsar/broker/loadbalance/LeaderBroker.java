@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,48 +18,35 @@
  */
 package org.apache.pulsar.broker.loadbalance;
 
-import com.google.common.base.Objects;
-
-import java.util.concurrent.atomic.AtomicBoolean;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * A class to hold the contents of the leader election node. Facilitates serialization and deserialization of the
  * information that might be added for leader broker in the future.
- *
- *
  */
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
 public class LeaderBroker {
-    public final String serviceUrl;
+    private String brokerId;
+    private String serviceUrl;
 
-    private AtomicBoolean isLeaderReady = new AtomicBoolean(false);
-
-    // Need this default constructor for json conversion. Please do not remove this.
-    public LeaderBroker() {
-        this(null);
-    }
-
-    public LeaderBroker(String serviceUrl) {
-        this.serviceUrl = serviceUrl;
-    }
-
-    public String getServiceUrl() {
-        return this.serviceUrl;
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-        if (obj instanceof LeaderBroker) {
-            LeaderBroker other = (LeaderBroker) obj;
-            return Objects.equal(serviceUrl, other.serviceUrl);
+    public String getBrokerId() {
+        if (brokerId != null) {
+            return brokerId;
+        } else {
+            // for backward compatibility at runtime with older versions of Pulsar
+            return parseHostAndPort(serviceUrl);
         }
-        return false;
     }
 
-    public boolean isLeaderReady() {
-        return isLeaderReady.get();
-    }
-
-    public void setLeaderReady(boolean isLeaderReady) {
-        this.isLeaderReady.compareAndSet(!isLeaderReady, isLeaderReady);
+    private static String parseHostAndPort(String serviceUrl) {
+        int uriSeparatorPos = serviceUrl.indexOf("://");
+        if (uriSeparatorPos == -1) {
+            throw new IllegalArgumentException("'" + serviceUrl + "' isn't an URI.");
+        }
+        return serviceUrl.substring(uriSeparatorPos + 3);
     }
 }

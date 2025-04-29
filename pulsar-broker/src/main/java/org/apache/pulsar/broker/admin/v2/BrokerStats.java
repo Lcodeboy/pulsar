@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,18 +22,17 @@ import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiResponse;
 import io.swagger.annotations.ApiResponses;
-import org.apache.pulsar.broker.admin.impl.BrokerStatsBase;
-import org.apache.pulsar.broker.loadbalance.ResourceUnit;
-
+import java.io.OutputStream;
+import java.util.Collection;
+import java.util.Map;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.StreamingOutput;
-import java.io.OutputStream;
-import java.util.Collection;
-import java.util.Map;
+import org.apache.pulsar.broker.admin.impl.BrokerStatsBase;
+import org.apache.pulsar.broker.loadbalance.ResourceUnit;
 
 @Path("/broker-stats")
 @Api(value = "/broker-stats", description = "Stats for broker", tags = "broker-stats")
@@ -62,7 +61,12 @@ public class BrokerStats extends BrokerStatsBase {
             + "sum of all of the resource usage percent is called broker-resource-availability"
             + "<br/><br/>THIS API IS ONLY FOR USE BY TESTING FOR CONFIRMING NAMESPACE ALLOCATION ALGORITHM",
             response = ResourceUnit.class, responseContainer = "Map")
-    @ApiResponses(value = { @ApiResponse(code = 403, message = "Don't have admin permission"),
+    @ApiResponses(value = {
+            @ApiResponse(code = 200, message = "Returns broker resource availability as Map<Long, List<ResourceUnit>>."
+                    + "Since `ResourceUnit` is an interface, its specific content is not determinable via class "
+                    + "reflection. Refer to the source code or interface tests for detailed type definitions.",
+            response = Map.class),
+            @ApiResponse(code = 403, message = "Don't have admin permission"),
             @ApiResponse(code = 409, message = "Load-manager doesn't support operation") })
     public Map<Long, Collection<ResourceUnit>> getBrokerResourceAvailability(@PathParam("tenant") String tenant,
         @PathParam("namespace") String namespace) {

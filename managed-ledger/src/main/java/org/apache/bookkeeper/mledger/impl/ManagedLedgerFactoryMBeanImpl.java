@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,8 +19,9 @@
 package org.apache.bookkeeper.mledger.impl;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 import org.apache.bookkeeper.mledger.ManagedLedgerFactoryMXBean;
-import org.apache.bookkeeper.mledger.util.Rate;
+import org.apache.pulsar.common.stats.Rate;
 
 @SuppressWarnings("checkstyle:javadoctype")
 public class ManagedLedgerFactoryMBeanImpl implements ManagedLedgerFactoryMXBean {
@@ -30,6 +31,10 @@ public class ManagedLedgerFactoryMBeanImpl implements ManagedLedgerFactoryMXBean
     final Rate cacheHits = new Rate();
     final Rate cacheMisses = new Rate();
     final Rate cacheEvictions = new Rate();
+
+    private final LongAdder insertedEntryCount = new LongAdder();
+    private final LongAdder evictedEntryCount = new LongAdder();
+    private final LongAdder cacheEntryCount = new LongAdder();
 
     public ManagedLedgerFactoryMBeanImpl(ManagedLedgerFactoryImpl factory) throws Exception {
         this.factory = factory;
@@ -64,7 +69,15 @@ public class ManagedLedgerFactoryMBeanImpl implements ManagedLedgerFactoryMXBean
         cacheEvictions.recordEvent();
     }
 
-    // //
+    public void recordCacheInsertion() {
+        insertedEntryCount.increment();
+        cacheEntryCount.increment();
+    }
+
+    public void recordNumberOfCacheEntriesEvicted(int count) {
+        evictedEntryCount.add(count);
+        cacheEntryCount.add(-count);
+    }
 
     @Override
     public int getNumberOfManagedLedgers() {
@@ -87,8 +100,18 @@ public class ManagedLedgerFactoryMBeanImpl implements ManagedLedgerFactoryMXBean
     }
 
     @Override
+    public long getCacheHitsTotal() {
+        return cacheHits.getTotalCount();
+    }
+
+    @Override
     public double getCacheMissesRate() {
         return cacheMisses.getRate();
+    }
+
+    @Override
+    public long getCacheMissesTotal() {
+        return cacheMisses.getTotalCount();
     }
 
     @Override
@@ -97,13 +120,40 @@ public class ManagedLedgerFactoryMBeanImpl implements ManagedLedgerFactoryMXBean
     }
 
     @Override
+    public long getCacheHitsBytesTotal() {
+        return cacheHits.getTotalValue();
+    }
+
+    @Override
     public double getCacheMissesThroughput() {
         return cacheMisses.getValueRate();
     }
 
     @Override
+    public long getCacheMissesBytesTotal() {
+        return cacheMisses.getTotalValue();
+    }
+
+    @Override
     public long getNumberOfCacheEvictions() {
         return cacheEvictions.getCount();
+    }
+
+    @Override
+    public long getNumberOfCacheEvictionsTotal() {
+        return cacheEvictions.getTotalCount();
+    }
+
+    public long getCacheInsertedEntriesCount() {
+        return insertedEntryCount.sum();
+    }
+
+    public long getCacheEvictedEntriesCount() {
+        return evictedEntryCount.sum();
+    }
+
+    public long getCacheEntriesCount() {
+        return cacheEntryCount.sum();
     }
 
 }

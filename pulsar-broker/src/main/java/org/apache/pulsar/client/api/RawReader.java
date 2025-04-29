@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
 import org.apache.pulsar.client.impl.RawReaderImpl;
+import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
 
 /**
  * Topic reader which receives raw messages (i.e. as they are stored in the managed ledger).
@@ -31,18 +32,41 @@ public interface RawReader {
      * Create a raw reader for a topic.
      */
 
-    public static CompletableFuture<RawReader> create(PulsarClient client, String topic, String subscription) {
-        CompletableFuture<Consumer<byte[]>> future = new CompletableFuture<>();
-        RawReader r = new RawReaderImpl((PulsarClientImpl)client, topic, subscription, future);
-        return future.thenCompose((consumer) -> r.seekAsync(MessageId.earliest)).thenApply((ignore) -> r);
+    static CompletableFuture<RawReader> create(PulsarClient client, String topic, String subscription) {
+        return create(client, topic, subscription, true);
     }
 
+    static CompletableFuture<RawReader> create(PulsarClient client, String topic, String subscription,
+                                               boolean createTopicIfDoesNotExist) {
+        CompletableFuture<Consumer<byte[]>> future = new CompletableFuture<>();
+        RawReader r =
+                new RawReaderImpl((PulsarClientImpl) client, topic, subscription, future, createTopicIfDoesNotExist);
+        return future.thenApply(__ -> r);
+    }
+
+    static CompletableFuture<RawReader> create(PulsarClient client,
+                                               ConsumerConfigurationData<byte[]> consumerConfiguration,
+                                               boolean createTopicIfDoesNotExist) {
+        CompletableFuture<Consumer<byte[]>> future = new CompletableFuture<>();
+        RawReader r = new RawReaderImpl((PulsarClientImpl) client,
+                consumerConfiguration, future, createTopicIfDoesNotExist);
+        return future.thenApply(__ -> r);
+    }
+
+
     /**
-     * Get the topic for the reader
+     * Get the topic for the reader.
      *
      * @return topic for the reader
      */
     String getTopic();
+
+    /**
+     * Check if there is any message available to read.
+     *
+     * @return a completable future which will return whether there is any message available to read.
+     */
+    CompletableFuture<Boolean> hasMessageAvailableAsync();
 
     /**
      * Seek to a location in the topic. After the seek, the first message read will be the one with
@@ -62,13 +86,13 @@ public interface RawReader {
      * with the individual acknowledgement, so later acknowledgements will overwrite all
      * properties from previous acknowledgements.
      *
-     * @param messageId to cumulatively acknowledge to
+     * @param messageId  to cumulatively acknowledge to
      * @param properties a map of properties which will be stored with the acknowledgement
      */
-    CompletableFuture<Void> acknowledgeCumulativeAsync(MessageId messageId, Map<String,Long> properties);
+    CompletableFuture<Void> acknowledgeCumulativeAsync(MessageId messageId, Map<String, Long> properties);
 
     /**
-     * Get the last message id available immediately available for reading
+     * Get the last message id available immediately available for reading.
      */
     CompletableFuture<MessageId> getLastMessageIdAsync();
 

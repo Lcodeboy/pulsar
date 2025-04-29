@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,17 +20,11 @@ package org.apache.pulsar.io.netty;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Map;
-
 import lombok.Data;
-import lombok.EqualsAndHashCode;
-import lombok.Getter;
-import lombok.Setter;
-import lombok.ToString;
 import lombok.experimental.Accessors;
 import org.apache.pulsar.io.core.annotations.FieldDoc;
 
@@ -38,10 +32,6 @@ import org.apache.pulsar.io.core.annotations.FieldDoc;
  * Netty Source Connector Config.
  */
 @Data
-@Setter
-@Getter
-@EqualsAndHashCode
-@ToString
 @Accessors(chain = true)
 public class NettySourceConfig implements Serializable {
 
@@ -74,7 +64,7 @@ public class NettySourceConfig implements Serializable {
 
     public static NettySourceConfig load(Map<String, Object> map) throws IOException {
         ObjectMapper mapper = new ObjectMapper();
-        return mapper.readValue(new ObjectMapper().writeValueAsString(map), NettySourceConfig.class);
+        return mapper.readValue(mapper.writeValueAsString(map), NettySourceConfig.class);
     }
 
     public static NettySourceConfig load(String yamlFile) throws IOException {

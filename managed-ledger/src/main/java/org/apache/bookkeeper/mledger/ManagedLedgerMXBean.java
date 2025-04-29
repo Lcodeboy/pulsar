@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,12 +18,16 @@
  */
 package org.apache.bookkeeper.mledger;
 
+import org.apache.bookkeeper.common.annotation.InterfaceAudience;
+import org.apache.bookkeeper.common.annotation.InterfaceStability;
 import org.apache.bookkeeper.mledger.proto.PendingBookieOpsStats;
 import org.apache.bookkeeper.mledger.util.StatsBuckets;
 
 /**
  * Management Bean for a {@link ManagedLedger}.
  */
+@InterfaceAudience.LimitedPrivate
+@InterfaceStability.Stable
 public interface ManagedLedgerMXBean {
 
     /**
@@ -35,6 +39,11 @@ public interface ManagedLedgerMXBean {
      * @return the total size of the messages in active ledgers (accounting for the multiple copies stored)
      */
     long getStoredMessagesSize();
+
+    /**
+     * @return the total size of the messages in active ledgers (without accounting for replicas)
+     */
+    long getStoredMessagesLogicalSize();
 
     /**
      * @return the number of backlog messages for all the consumers
@@ -52,6 +61,21 @@ public interface ManagedLedgerMXBean {
     double getAddEntryBytesRate();
 
     /**
+     * @return the total number of bytes written
+     */
+    long getAddEntryBytesTotal();
+
+    /**
+     * @return the bytes/s rate of messages added with replicas
+     */
+    double getAddEntryWithReplicasBytesRate();
+
+    /**
+     * @return the total number of bytes written, including replicas
+     */
+    long getAddEntryWithReplicasBytesTotal();
+
+    /**
      * @return the msg/s rate of messages read
      */
     double getReadEntriesRate();
@@ -62,9 +86,19 @@ public interface ManagedLedgerMXBean {
     double getReadEntriesBytesRate();
 
     /**
+     * @return the total number of bytes read
+     */
+    long getReadEntriesBytesTotal();
+
+    /**
      * @return the rate of mark-delete ops/s
      */
     double getMarkDeleteRate();
+
+    /**
+     * @return the number of mark-delete ops
+     */
+    long getMarkDeleteTotal();
 
     /**
      * @return the number of addEntry requests that succeeded
@@ -72,9 +106,24 @@ public interface ManagedLedgerMXBean {
     long getAddEntrySucceed();
 
     /**
+     * @return the total number of addEntry requests that succeeded
+     */
+    long getAddEntrySucceedTotal();
+
+    /**
      * @return the number of addEntry requests that failed
      */
     long getAddEntryErrors();
+
+    /**
+     * @return the total number of addEntry requests that failed
+     */
+    long getAddEntryErrorsTotal();
+
+    /**
+     * @return the number of entries read from the managed ledger (from cache or BK)
+     */
+    long getEntriesReadTotalCount();
 
     /**
      * @return the number of readEntries requests that succeeded
@@ -82,9 +131,29 @@ public interface ManagedLedgerMXBean {
     long getReadEntriesSucceeded();
 
     /**
+     * @return the total number of readEntries requests that succeeded
+     */
+    long getReadEntriesSucceededTotal();
+
+    /**
      * @return the number of readEntries requests that failed
      */
     long getReadEntriesErrors();
+
+    /**
+     * @return the total number of readEntries requests that failed
+     */
+    long getReadEntriesErrorsTotal();
+
+    /**
+     * @return the number of readEntries requests that cache miss Rate
+     */
+    double getReadEntriesOpsCacheMissesRate();
+
+    /**
+     * @return the total number of readEntries requests that cache miss
+     */
+    long getReadEntriesOpsCacheMissesTotal();
 
     // Entry size statistics
 
@@ -107,4 +176,10 @@ public interface ManagedLedgerMXBean {
     StatsBuckets getInternalEntrySizeBuckets();
 
     PendingBookieOpsStats getPendingBookieOpsStats();
+
+    double getLedgerAddEntryLatencyAverageUsec();
+
+    long[] getLedgerAddEntryLatencyBuckets();
+
+    StatsBuckets getInternalLedgerAddEntryLatencyBuckets();
 }

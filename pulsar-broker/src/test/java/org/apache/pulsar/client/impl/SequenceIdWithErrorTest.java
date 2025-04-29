@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,13 +19,15 @@
 package org.apache.pulsar.client.impl;
 
 import static org.testng.Assert.assertEquals;
-
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.opentelemetry.api.OpenTelemetry;
 import java.util.Collections;
-
+import lombok.Cleanup;
 import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.ManagedLedgerFactory;
 import org.apache.pulsar.broker.ManagedLedgerClientFactory;
-import org.apache.pulsar.broker.service.BrokerBkEnsemblesTests;
+import org.apache.pulsar.broker.service.BkEnsemblesTestBase;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.Producer;
@@ -34,7 +36,8 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.common.naming.TopicName;
 import org.testng.annotations.Test;
 
-public class SequenceIdWithErrorTest extends BrokerBkEnsemblesTests {
+@Test(groups = "quarantine")
+public class SequenceIdWithErrorTest extends BkEnsemblesTestBase {
 
     /**
      * Test that sequence id from a producer is correct when there are send errors
@@ -46,7 +49,8 @@ public class SequenceIdWithErrorTest extends BrokerBkEnsemblesTests {
         String topicName = "prop/my-test/my-topic";
         int N = 10;
 
-        PulsarClient client = PulsarClient.builder().serviceUrl("pulsar://localhost:" + BROKER_SERVICE_PORT).build();
+        @Cleanup
+        PulsarClient client = PulsarClient.builder().serviceUrl(pulsar.getBrokerServiceUrl()).build();
 
         // Create consumer
         Consumer<String> consumer = client.newConsumer(Schema.STRING).topic(topicName).subscriptionName("sub")
@@ -54,9 +58,11 @@ public class SequenceIdWithErrorTest extends BrokerBkEnsemblesTests {
 
         // Fence the topic by opening the ManagedLedger for the topic outside the Pulsar broker. This will cause the
         // broker to fail subsequent send operation and it will trigger a recover
-        ManagedLedgerClientFactory clientFactory = new ManagedLedgerClientFactory(pulsar.getConfiguration(),
-                pulsar.getZkClient(), pulsar.getBookKeeperClientFactory());
-        ManagedLedgerFactory mlFactory = clientFactory.getManagedLedgerFactory();
+        EventLoopGroup eventLoopGroup = new NioEventLoopGroup(1);
+        ManagedLedgerClientFactory clientFactory = new ManagedLedgerClientFactory();
+        clientFactory.initialize(pulsar.getConfiguration(), pulsar.getLocalMetadataStore(),
+                pulsar.getBookKeeperClientFactory(), eventLoopGroup, OpenTelemetry.noop());
+        ManagedLedgerFactory mlFactory = clientFactory.getDefaultStorageClass().getManagedLedgerFactory();
         ManagedLedger ml = mlFactory.open(TopicName.get(topicName).getPersistenceNamingEncoding());
         ml.close();
         clientFactory.close();
@@ -76,15 +82,6 @@ public class SequenceIdWithErrorTest extends BrokerBkEnsemblesTests {
         }
 
         client.close();
-    }
-
-    @Test(enabled = false)
-    public void testCrashBrokerWithoutCursorLedgerLeak() throws Exception {
-        // Ignore test
-    }
-
-    @Test(enabled = false)
-    public void testSkipCorruptDataLedger() throws Exception {
-        // Ignore test
+        eventLoopGroup.shutdownGracefully().get();
     }
 }

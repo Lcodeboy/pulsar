@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,17 +20,18 @@ package org.apache.bookkeeper.mledger;
 
 import java.io.IOException;
 import java.util.Map;
-import java.util.Properties;
 import org.apache.bookkeeper.common.annotation.InterfaceAudience.LimitedPrivate;
 import org.apache.bookkeeper.common.annotation.InterfaceStability.Evolving;
 import org.apache.bookkeeper.common.util.OrderedScheduler;
+import org.apache.pulsar.common.policies.data.OffloadPoliciesImpl;
+import org.apache.pulsar.common.protocol.schema.SchemaStorage;
 
 /**
  * Factory to create {@link LedgerOffloader} to offload ledgers into long-term storage.
  */
 @LimitedPrivate
 @Evolving
-public interface LedgerOffloaderFactory<T extends LedgerOffloader> {
+public interface LedgerOffloaderFactory<T extends LedgerOffloader> extends AutoCloseable {
 
     /**
      * Check whether the provided driver <tt>driverName</tt> is supported.
@@ -41,17 +42,123 @@ public interface LedgerOffloaderFactory<T extends LedgerOffloader> {
     boolean isDriverSupported(String driverName);
 
     /**
-     * Create a ledger offloader with the provided configuration, user-metadata and scheduler.
+     * Create a ledger offloader with the provided configuration, user-metadata, scheduler and offloaderStats.
      *
-     * @param properties service configuration
+     * @param offloadPolicies offload policies
      * @param userMetadata user metadata
      * @param scheduler scheduler
      * @return the offloader instance
      * @throws IOException when fail to create an offloader
      */
-    T create(Properties properties,
+    T create(OffloadPoliciesImpl offloadPolicies,
              Map<String, String> userMetadata,
              OrderedScheduler scheduler)
+            throws IOException;
+
+
+    /**
+     * Create a ledger offloader with the provided configuration, user-metadata, scheduler and offloaderStats.
+     *
+     * @param offloadPolicies offload policies
+     * @param userMetadata user metadata
+     * @param scheduler scheduler
+     * @param offloaderStats offloaderStats
+     * @return the offloader instance
+     * @throws IOException when fail to create an offloader
+     */
+    T create(OffloadPoliciesImpl offloadPolicies,
+             Map<String, String> userMetadata,
+             OrderedScheduler scheduler,
+             LedgerOffloaderStats offloaderStats)
         throws IOException;
 
+    /**
+     * Create a ledger offloader with the provided configuration, user-metadata,
+     * scheduler, readExecutor and offloaderStats.
+     *
+     * @param offloadPolicies offload policies
+     * @param userMetadata user metadata
+     * @param scheduler scheduler
+     * @param readExecutor read executor
+     * @param offloaderStats offloaderStats
+     * @return the offloader instance
+     * @throws IOException when fail to create an offloader
+     */
+    default T create(OffloadPoliciesImpl offloadPolicies,
+             Map<String, String> userMetadata,
+             OrderedScheduler scheduler,
+             OrderedScheduler readExecutor,
+             LedgerOffloaderStats offloaderStats)
+            throws IOException {
+        return create(offloadPolicies, userMetadata, scheduler, offloaderStats);
+    }
+
+
+    /**
+     * Create a ledger offloader with the provided configuration, user-metadata, schema storage and scheduler.
+     *
+     * @param offloadPolicies offload policies
+     * @param userMetadata user metadata
+     * @param schemaStorage used for schema lookup in offloader
+     * @param scheduler scheduler
+     * @return the offloader instance
+     * @throws IOException when fail to create an offloader
+     */
+    default T create(OffloadPoliciesImpl offloadPolicies,
+                     Map<String, String> userMetadata,
+                     SchemaStorage schemaStorage,
+                     OrderedScheduler scheduler)
+            throws IOException {
+        return create(offloadPolicies, userMetadata, scheduler);
+    }
+
+    /**
+     * Create a ledger offloader with the provided configuration, user-metadata, schema storage,
+     * scheduler and offloaderStats.
+     *
+     * @param offloadPolicies offload policies
+     * @param userMetadata user metadata
+     * @param schemaStorage used for schema lookup in offloader
+     * @param scheduler scheduler
+     * @param offloaderStats offloaderStats
+     * @return the offloader instance
+     * @throws IOException when fail to create an offloader
+     */
+    default T create(OffloadPoliciesImpl offloadPolicies,
+                     Map<String, String> userMetadata,
+                     SchemaStorage schemaStorage,
+                     OrderedScheduler scheduler,
+                     LedgerOffloaderStats offloaderStats)
+            throws IOException {
+        return create(offloadPolicies, userMetadata, scheduler, offloaderStats);
+    }
+
+
+    /**
+     * Create a ledger offloader with the provided configuration, user-metadata, schema storage,
+     * scheduler, readExecutor and offloaderStats.
+     *
+     * @param offloadPolicies offload policies
+     * @param userMetadata user metadata
+     * @param schemaStorage used for schema lookup in offloader
+     * @param scheduler scheduler
+     * @param readExecutor read executor
+     * @param offloaderStats offloaderStats
+     * @return the offloader instance
+     * @throws IOException when fail to create an offloader
+     */
+    default T create(OffloadPoliciesImpl offloadPolicies,
+                     Map<String, String> userMetadata,
+                     SchemaStorage schemaStorage,
+                     OrderedScheduler scheduler,
+                     OrderedScheduler readExecutor,
+                     LedgerOffloaderStats offloaderStats)
+            throws IOException {
+        return create(offloadPolicies, userMetadata, scheduler, readExecutor, offloaderStats);
+    }
+
+    @Override
+    default void close() throws Exception {
+        // no-op
+    }
 }

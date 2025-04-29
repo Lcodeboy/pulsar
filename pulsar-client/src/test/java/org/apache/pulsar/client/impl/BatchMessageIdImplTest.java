@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,8 +18,10 @@
  */
 package org.apache.pulsar.client.impl;
 
-import org.apache.pulsar.client.impl.BatchMessageIdImpl;
-import org.testng.Assert;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotEquals;
+import java.io.IOException;
+import java.util.Collections;
 import org.testng.annotations.Test;
 
 public class BatchMessageIdImplTest {
@@ -29,10 +31,9 @@ public class BatchMessageIdImplTest {
         BatchMessageIdImpl batchMsgId1 = new BatchMessageIdImpl(0, 0, 0, 0);
         BatchMessageIdImpl batchMsgId2 = new BatchMessageIdImpl(1, 1, 1, 1);
 
-        Assert.assertEquals(batchMsgId1.compareTo(batchMsgId2), -1);
-        Assert.assertEquals(batchMsgId2.compareTo(batchMsgId1), 1);
-        Assert.assertEquals(batchMsgId2.compareTo(batchMsgId2), 0);
-
+        assertEquals(batchMsgId1.compareTo(batchMsgId2), -1);
+        assertEquals(batchMsgId2.compareTo(batchMsgId1), 1);
+        assertEquals(batchMsgId2.compareTo(batchMsgId2), 0);
     }
 
     @Test
@@ -40,9 +41,8 @@ public class BatchMessageIdImplTest {
         BatchMessageIdImpl batchMsgId1 = new BatchMessageIdImpl(0, 0, 0, 0);
         BatchMessageIdImpl batchMsgId2 = new BatchMessageIdImpl(1, 1, 1, 1);
 
-        Assert.assertEquals(batchMsgId1.hashCode(), batchMsgId1.hashCode());
-        Assert.assertTrue(batchMsgId1.hashCode() != batchMsgId2.hashCode());
-
+        assertEquals(batchMsgId1.hashCode(), batchMsgId1.hashCode());
+        assertNotEquals(batchMsgId1.hashCode(), batchMsgId2.hashCode());
     }
 
     @Test
@@ -53,19 +53,79 @@ public class BatchMessageIdImplTest {
         BatchMessageIdImpl batchMsgId4 = new BatchMessageIdImpl(0, 0, 0, -1);
         MessageIdImpl msgId = new MessageIdImpl(0, 0, 0);
 
-        Assert.assertTrue(batchMsgId1.equals(batchMsgId1));
-        Assert.assertFalse(batchMsgId1.equals(batchMsgId2));
-        Assert.assertFalse(batchMsgId1.equals(batchMsgId3));
-        Assert.assertFalse(batchMsgId1.equals(batchMsgId4));
-        Assert.assertFalse(batchMsgId1.equals(msgId));
+        assertEquals(batchMsgId1, batchMsgId1);
+        assertNotEquals(batchMsgId2, batchMsgId1);
+        assertNotEquals(batchMsgId3, batchMsgId1);
+        assertNotEquals(batchMsgId4, batchMsgId1);
+        assertNotEquals(msgId, batchMsgId1);
 
-        Assert.assertTrue(msgId.equals(msgId));
-        Assert.assertFalse(msgId.equals(batchMsgId1));
-        Assert.assertFalse(msgId.equals(batchMsgId2));
-        Assert.assertFalse(msgId.equals(batchMsgId3));
-        Assert.assertTrue(msgId.equals(batchMsgId4));
+        assertEquals(msgId, msgId);
+        assertNotEquals(batchMsgId1, msgId);
+        assertNotEquals(batchMsgId2, msgId);
+        assertNotEquals(batchMsgId3, msgId);
+        assertEquals(batchMsgId4, msgId);
 
-        Assert.assertTrue(batchMsgId4.equals(msgId));
+        assertEquals(msgId, batchMsgId4);
+    }
+
+    @Test
+    public void notEqualsMultiTest() {
+        BatchMessageIdImpl batchMsgId = new BatchMessageIdImpl(0, 0, 0, 0);
+        MessageIdImpl msgId = new MessageIdImpl(0, 0, 0);
+        MultiMessageIdImpl multiMsgId = new MultiMessageIdImpl(Collections.singletonMap("topic", msgId));
+
+        assertNotEquals(msgId, multiMsgId);
+        assertNotEquals(multiMsgId, msgId);
+        assertNotEquals(batchMsgId, multiMsgId);
+        assertNotEquals(multiMsgId, batchMsgId);
+    }
+
+    @Test
+    public void compareToUnbatchedTest() {
+        MessageIdImpl msgId = new MessageIdImpl(1, 2, 3);
+        BatchMessageIdImpl batchMsgId = new BatchMessageIdImpl(1, 2, 3, 0);
+        assertEquals(msgId.compareTo(batchMsgId), -1);
+        assertEquals(batchMsgId.compareTo(msgId), 1);
+
+        batchMsgId = new BatchMessageIdImpl(1, 2, 3, -1);
+        assertEquals(msgId.compareTo(batchMsgId), 0);
+        assertEquals(batchMsgId.compareTo(msgId), 0);
+    }
+
+    @Test
+    public void equalsUnbatchedTest() {
+        BatchMessageIdImpl batchMsgId1 = new BatchMessageIdImpl(0, 0, 0, -1);
+        BatchMessageIdImpl batchMsgId2 = new BatchMessageIdImpl(1, 1, 1, -1);
+
+        MessageIdImpl msgId1 = new MessageIdImpl(0, 0, 0);
+        MessageIdImpl msgId2 = new MessageIdImpl(1, 1, 1);
+
+        assertEquals(batchMsgId1, msgId1);
+        assertEquals(batchMsgId2, msgId2);
+        assertNotEquals(batchMsgId1, msgId2);
+        assertNotEquals(batchMsgId2, msgId1);
+    }
+
+    @Test
+    public void hashCodeUnbatchedTest() {
+        BatchMessageIdImpl batchMsgId1 = new BatchMessageIdImpl(0, 0, 0, -1);
+        BatchMessageIdImpl batchMsgId2 = new BatchMessageIdImpl(1, 1, 1, -1);
+
+        MessageIdImpl msgId1 = new MessageIdImpl(0, 0, 0);
+        MessageIdImpl msgId2 = new MessageIdImpl(1, 1, 1);
+
+        assertEquals(batchMsgId1.hashCode(), msgId1.hashCode());
+        assertEquals(batchMsgId2.hashCode(), msgId2.hashCode());
+    }
+
+    @Test
+    public void serializeAndDeserializeTest() throws IOException {
+        BatchMessageIdImpl batchMessageId = new BatchMessageIdImpl(1, 1, 0,
+            1, 10, BatchMessageIdImpl.newAckSet(10));
+        byte[] serialized = batchMessageId.toByteArray();
+        BatchMessageIdImpl deserialized = (BatchMessageIdImpl) MessageIdImpl.fromByteArray(serialized);
+        assertEquals(deserialized.getBatchSize(), batchMessageId.getBatchSize());
+        assertEquals(deserialized, batchMessageId);
     }
 
 }

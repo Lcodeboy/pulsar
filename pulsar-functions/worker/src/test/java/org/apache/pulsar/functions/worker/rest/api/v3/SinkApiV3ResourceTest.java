@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,184 +18,101 @@
  */
 package org.apache.pulsar.functions.worker.rest.api.v3;
 
+import static org.apache.pulsar.functions.proto.Function.ProcessingGuarantees.ATLEAST_ONCE;
+import static org.apache.pulsar.functions.source.TopicSchema.DEFAULT_SERDE;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.fail;
 import com.google.common.collect.Lists;
-import com.google.gson.Gson;
-import lombok.extern.slf4j.Slf4j;
-import org.apache.distributedlog.api.namespace.Namespace;
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.core.config.Configurator;
-import org.apache.pulsar.client.admin.Namespaces;
-import org.apache.pulsar.client.admin.PulsarAdmin;
-import org.apache.pulsar.client.admin.PulsarAdminException;
-import org.apache.pulsar.client.admin.Tenants;
-import org.apache.pulsar.common.functions.FunctionConfig;
-import org.apache.pulsar.common.io.SinkConfig;
-import org.apache.pulsar.common.nar.NarClassLoader;
-import org.apache.pulsar.common.policies.data.TenantInfo;
-import org.apache.pulsar.common.util.FutureUtil;
-import org.apache.pulsar.functions.api.utils.IdentityFunction;
-import org.apache.pulsar.functions.proto.Function;
-import org.apache.pulsar.functions.proto.Function.FunctionDetails;
-import org.apache.pulsar.functions.proto.Function.FunctionMetaData;
-import org.apache.pulsar.functions.runtime.RuntimeFactory;
-import org.apache.pulsar.functions.utils.SinkConfigUtils;
-import org.apache.pulsar.functions.utils.io.ConnectorUtils;
-import org.apache.pulsar.functions.worker.FunctionMetaDataManager;
-import org.apache.pulsar.functions.worker.FunctionRuntimeManager;
-import org.apache.pulsar.functions.worker.Utils;
-import org.apache.pulsar.functions.worker.WorkerConfig;
-import org.apache.pulsar.functions.worker.WorkerService;
-import org.apache.pulsar.functions.worker.request.RequestResult;
-import org.apache.pulsar.functions.worker.rest.RestException;
-import org.apache.pulsar.functions.worker.rest.api.SinkImpl;
-import org.apache.pulsar.io.cassandra.CassandraStringSink;
-import org.glassfish.jersey.media.multipart.FormDataContentDisposition;
-import org.mockito.Mockito;
-import org.powermock.core.classloader.annotations.PowerMockIgnore;
-import org.powermock.core.classloader.annotations.PrepareForTest;
-import org.testng.IObjectFactory;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.ObjectFactory;
-import org.testng.annotations.Test;
-
-import javax.ws.rs.core.Response;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URL;
-import java.nio.file.Path;
+import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-
-import static org.apache.pulsar.functions.proto.Function.ProcessingGuarantees.ATLEAST_ONCE;
-import static org.apache.pulsar.functions.source.TopicSchema.DEFAULT_SERDE;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
-import static org.powermock.api.mockito.PowerMockito.doNothing;
-import static org.powermock.api.mockito.PowerMockito.doReturn;
-import static org.powermock.api.mockito.PowerMockito.doThrow;
-import static org.powermock.api.mockito.PowerMockito.mockStatic;
-import static org.testng.Assert.assertEquals;
+import javax.ws.rs.core.Response;
+import org.apache.distributedlog.api.namespace.Namespace;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.config.Configurator;
+import org.apache.pulsar.broker.authentication.AuthenticationParameters;
+import org.apache.pulsar.client.admin.PulsarAdminException;
+import org.apache.pulsar.common.functions.UpdateOptionsImpl;
+import org.apache.pulsar.common.functions.Utils;
+import org.apache.pulsar.common.io.SinkConfig;
+import org.apache.pulsar.common.util.RestException;
+import org.apache.pulsar.functions.api.examples.RecordFunction;
+import org.apache.pulsar.functions.api.utils.IdentityFunction;
+import org.apache.pulsar.functions.instance.InstanceUtils;
+import org.apache.pulsar.functions.proto.Function;
+import org.apache.pulsar.functions.proto.Function.FunctionDetails;
+import org.apache.pulsar.functions.proto.Function.FunctionMetaData;
+import org.apache.pulsar.functions.utils.SinkConfigUtils;
+import org.apache.pulsar.functions.worker.WorkerConfig;
+import org.apache.pulsar.functions.worker.WorkerUtils;
+import org.apache.pulsar.functions.worker.rest.api.SinksImpl;
+import org.glassfish.jersey.media.multipart.FormDataContentDisposition;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.testng.Assert;
+import org.testng.annotations.Test;
 
 /**
- * Unit test of {@link SinkApiV3Resource}.
+ * Unit test of {@link SinksApiV3Resource}.
  */
-@PrepareForTest({Utils.class, SinkConfigUtils.class, ConnectorUtils.class, org.apache.pulsar.functions.utils.Utils.class})
-@PowerMockIgnore({ "javax.management.*", "javax.ws.*", "org.apache.logging.log4j.*", "org.apache.pulsar.io.*" })
-@Slf4j
-public class SinkApiV3ResourceTest {
+public class SinkApiV3ResourceTest extends AbstractFunctionsResourceTest {
 
-    @ObjectFactory
-    public IObjectFactory getObjectFactory() {
-        return new org.powermock.modules.testng.PowerMockObjectFactory();
-    }
-
-    private static final String tenant = "test-tenant";
-    private static final String namespace = "test-namespace";
     private static final String sink = "test-sink";
-    private static final Map<String, String> topicsToSerDeClassName = new HashMap<>();
-    static {
-        topicsToSerDeClassName.put("persistent://sample/standalone/ns1/test_src", DEFAULT_SERDE);
+
+    private SinksImpl resource;
+
+    @Override
+    protected void doSetup() {
+        this.resource = spy(new SinksImpl(() -> mockedWorkerService));
     }
-    private static final String subscriptionName = "test-subscription";
-    private static final String className = CassandraStringSink.class.getName();
-    private static final int parallelism = 1;
-    private static final String JAR_FILE_NAME = "pulsar-io-cassandra.nar";
-    private static final String INVALID_JAR_FILE_NAME = "pulsar-io-twitter.nar";
-    private String JAR_FILE_PATH;
-    private String INVALID_JAR_FILE_PATH;
 
-    private WorkerService mockedWorkerService;
-    private PulsarAdmin mockedPulsarAdmin;
-    private Tenants mockedTenants;
-    private Namespaces mockedNamespaces;
-    private TenantInfo mockedTenantInfo;
-    private List<String> namespaceList = new LinkedList<>();
-    private FunctionMetaDataManager mockedManager;
-    private FunctionRuntimeManager mockedFunctionRunTimeManager;
-    private RuntimeFactory mockedRuntimeFactory;
-    private Namespace mockedNamespace;
-    private SinkImpl resource;
-    private InputStream mockedInputStream;
-    private FormDataContentDisposition mockedFormData;
-    private FunctionMetaData mockedFunctionMetaData;
-
-    @BeforeMethod
-    public void setup() throws Exception {
-        this.mockedManager = mock(FunctionMetaDataManager.class);
-        this.mockedFunctionRunTimeManager = mock(FunctionRuntimeManager.class);
-        this.mockedRuntimeFactory = mock(RuntimeFactory.class);
-        this.mockedInputStream = mock(InputStream.class);
-        this.mockedNamespace = mock(Namespace.class);
-        this.mockedFormData = mock(FormDataContentDisposition.class);
-        when(mockedFormData.getFileName()).thenReturn("test");
-        this.mockedTenantInfo = mock(TenantInfo.class);
-        this.mockedPulsarAdmin = mock(PulsarAdmin.class);
-        this.mockedTenants = mock(Tenants.class);
-        this.mockedNamespaces = mock(Namespaces.class);
-        namespaceList.add(tenant + "/" + namespace);
-
-        this.mockedWorkerService = mock(WorkerService.class);
-        when(mockedWorkerService.getFunctionMetaDataManager()).thenReturn(mockedManager);
-        when(mockedWorkerService.getFunctionRuntimeManager()).thenReturn(mockedFunctionRunTimeManager);
-        when(mockedFunctionRunTimeManager.getRuntimeFactory()).thenReturn(mockedRuntimeFactory);
-        when(mockedWorkerService.getDlogNamespace()).thenReturn(mockedNamespace);
-        when(mockedWorkerService.isInitialized()).thenReturn(true);
-        when(mockedWorkerService.getBrokerAdmin()).thenReturn(mockedPulsarAdmin);
-        when(mockedPulsarAdmin.tenants()).thenReturn(mockedTenants);
-        when(mockedPulsarAdmin.namespaces()).thenReturn(mockedNamespaces);
-        when(mockedTenants.getTenantInfo(any())).thenReturn(mockedTenantInfo);
-        when(mockedNamespaces.getNamespaces(any())).thenReturn(namespaceList);
-
-        URL file = Thread.currentThread().getContextClassLoader().getResource(JAR_FILE_NAME);
-        if (file == null)  {
-            throw new RuntimeException("Failed to file required test archive: " + JAR_FILE_NAME);
+    @Override
+    protected void customizeWorkerConfig(WorkerConfig workerConfig, Method method) {
+        if (method.getName().contains("Upload") || method.getName().contains("BKPackage")) {
+            workerConfig.setFunctionsWorkerEnablePackageManagement(false);
         }
-        JAR_FILE_PATH = file.getFile();
-        INVALID_JAR_FILE_PATH = Thread.currentThread().getContextClassLoader().getResource(INVALID_JAR_FILE_NAME).getFile();
-
-
-        // worker config
-        WorkerConfig workerConfig = new WorkerConfig()
-            .setWorkerId("test")
-            .setWorkerPort(8080)
-            .setDownloadDirectory("/tmp/pulsar/functions")
-            .setFunctionMetadataTopicName("pulsar/functions")
-            .setNumFunctionPackageReplicas(3)
-            .setPulsarServiceUrl("pulsar://localhost:6650/");
-        when(mockedWorkerService.getWorkerConfig()).thenReturn(workerConfig);
-
-        this.resource = spy(new SinkImpl(() -> mockedWorkerService));
-        Mockito.doReturn(org.apache.pulsar.functions.utils.Utils.ComponentType.SINK).when(this.resource).calculateSubjectType(any());
+    }
+    @Override
+    protected Function.FunctionDetails.ComponentType getComponentType() {
+        return Function.FunctionDetails.ComponentType.SINK;
     }
 
-    //
-    // Register Functions
-    //
+    @Override
+    protected File getDefaultNarFile() {
+        return getPulsarIOCassandraNar();
+    }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Tenant is not provided")
     public void testRegisterSinkMissingTenant() {
         try {
             testRegisterSinkMissingArguments(
-                null,
-                namespace,
+                    null,
+                    namespace,
                     sink,
-                mockedInputStream,
-                mockedFormData,
-                topicsToSerDeClassName,
-                className,
-                parallelism,
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
                     null
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
@@ -205,177 +122,217 @@ public class SinkApiV3ResourceTest {
     public void testRegisterSinkMissingNamespace() {
         try {
             testRegisterSinkMissingArguments(
-                tenant,
-                null,
+                    tenant,
+                    null,
                     sink,
-                mockedInputStream,
-                mockedFormData,
-                topicsToSerDeClassName,
-                className,
-                parallelism,
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
                     null
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink Name is not provided")
-    public void testRegisterSinkMissingFunctionName() {
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink name is not provided")
+    public void testRegisterSinkMissingSinkName() {
         try {
             testRegisterSinkMissingArguments(
-                tenant,
-                namespace,
-                null,
-                mockedInputStream,
-                mockedFormData,
-                topicsToSerDeClassName,
-                className,
-                parallelism,
+                    tenant,
+                    namespace,
+                    null,
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
                     null);
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink Package is not provided")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink package is not provided")
     public void testRegisterSinkMissingPackage() {
         try {
             testRegisterSinkMissingArguments(
-            tenant,
-            namespace,
-                sink,
-            null,
-            mockedFormData,
-            topicsToSerDeClassName,
-            null,
-            parallelism,
-                null
+                    tenant,
+                    namespace,
+                    sink,
+                    null,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    null,
+                    parallelism,
+                    null
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "zip file is empty")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink class UnknownClass not "
+            + "found")
+    public void testRegisterSinkWrongClassName() {
+        mockInstanceUtils();
+        try {
+            testRegisterSinkMissingArguments(
+                    tenant,
+                    namespace,
+                    sink,
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    "UnknownClass",
+                    parallelism,
+                    null
+            );
+        } catch (RestException re) {
+            assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
+            throw re;
+        }
+    }
+
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink package doesn't contain "
+            + "the META-INF/services/pulsar-io.yaml file.")
     public void testRegisterSinkMissingPackageDetails() {
+        mockInstanceUtils();
         try {
             testRegisterSinkMissingArguments(
-            tenant,
-            namespace,
-                sink,
-            mockedInputStream,
-            null,
-            topicsToSerDeClassName,
-            null,
-            parallelism,
-                null
+                    tenant,
+                    namespace,
+                    sink,
+                    mockedInputStream,
+                    null,
+                    topicsToSerDeClassName,
+                    null,
+                    parallelism,
+                    null
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Failed to extract sink class from archive")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Failed to extract sink class "
+            + "from archive")
     public void testRegisterSinkInvalidJarNoSink() throws IOException {
+        mockInstanceUtils();
         try {
-            FileInputStream inputStream = new FileInputStream(INVALID_JAR_FILE_PATH);
-            testRegisterSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                inputStream,
-                mockedFormData,
-                topicsToSerDeClassName,
-                null,
-                parallelism,
-                null
-            );
-        } catch (RestException re){
+            try (FileInputStream inputStream = new FileInputStream(getPulsarIOTwitterNar())) {
+                testRegisterSinkMissingArguments(
+                        tenant,
+                        namespace,
+                        sink,
+                        inputStream,
+                        mockedFormData,
+                        topicsToSerDeClassName,
+                        null,
+                        parallelism,
+                        null
+                );
+            }
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Must specify at least one topic of input via topicToSerdeClassName, topicsPattern, topicToSchemaType or inputSpecs")
-    public void testRegisterSinkNoInput() {
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Must specify at least one "
+            + "topic of input via topicToSerdeClassName, topicsPattern, topicToSchemaType or inputSpecs")
+    public void testRegisterSinkNoInput() throws IOException {
+        mockInstanceUtils();
         try {
-            testRegisterSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                mockedInputStream,
-                mockedFormData,
-                null,
-                className,
-                parallelism,
-                null
-            );
-        } catch (RestException re){
+            try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+                testRegisterSinkMissingArguments(
+                        tenant,
+                        namespace,
+                        sink,
+                        inputStream,
+                        mockedFormData,
+                        null,
+                        CASSANDRA_STRING_SINK,
+                        parallelism,
+                        null
+                );
+            }
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink parallelism should positive number")
-    public void testRegisterSinkNegativeParallelism() {
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink parallelism must be a "
+            + "positive number")
+    public void testRegisterSinkNegativeParallelism() throws IOException {
+        mockInstanceUtils();
         try {
-            testRegisterSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                mockedInputStream,
-                mockedFormData,
-                topicsToSerDeClassName,
-                className,
-                -2,
-                null
-            );
-        } catch (RestException re){
+            try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+                testRegisterSinkMissingArguments(
+                        tenant,
+                        namespace,
+                        sink,
+                        inputStream,
+                        mockedFormData,
+                        topicsToSerDeClassName,
+                        CASSANDRA_STRING_SINK,
+                        -2,
+                        null
+                );
+            }
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink parallelism should positive number")
-    public void testRegisterSinkZeroParallelism() {
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink parallelism must be a "
+            + "positive number")
+    public void testRegisterSinkZeroParallelism() throws IOException {
+        mockInstanceUtils();
         try {
-            testRegisterSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                mockedInputStream,
-                mockedFormData,
-                topicsToSerDeClassName,
-                className,
-                0,
-                null
-            );
-        } catch (RestException re){
+            try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+                testRegisterSinkMissingArguments(
+                        tenant,
+                        namespace,
+                        sink,
+                        inputStream,
+                        mockedFormData,
+                        topicsToSerDeClassName,
+                        CASSANDRA_STRING_SINK,
+                        0,
+                        null
+                );
+            }
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Invalid Sink Jar")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Encountered error .*. when "
+            + "getting Sink package from .*")
     public void testRegisterSinkHttpUrl() {
         try {
             testRegisterSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                null,
-                null,
-                topicsToSerDeClassName,
-                className,
-                parallelism,
-                "http://localhost:1234/test"
+                    tenant,
+                    namespace,
+                    sink,
+                    null,
+                    null,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
+                    "http://localhost:1234/test"
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
@@ -411,31 +368,62 @@ public class SinkApiV3ResourceTest {
             sinkConfig.setParallelism(parallelism);
         }
 
-        resource.registerFunction(
+        resource.registerSink(
                 tenant,
                 namespace,
                 sink,
                 inputStream,
                 details,
                 pkgUrl,
-                null,
-                new Gson().toJson(sinkConfig),
+                sinkConfig,
                 null);
 
     }
 
-    private void registerDefaultSink() throws IOException {
-        SinkConfig sinkConfig = createDefaultSinkConfig();
-        resource.registerFunction(
-            tenant,
-            namespace,
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink config is not provided")
+    public void testMissingSinkConfig() {
+        resource.registerSink(
+                tenant,
+                namespace,
                 sink,
-                new FileInputStream(JAR_FILE_PATH),
-            mockedFormData,
-            null,
-            null,
-            new Gson().toJson(sinkConfig),
+                mockedInputStream,
+                mockedFormData,
+                null,
+                null,
                 null);
+    }
+
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink config is not provided")
+    public void testUpdateMissingSinkConfig() {
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+        resource.updateSink(
+                tenant,
+                namespace,
+                sink,
+                mockedInputStream,
+                mockedFormData,
+                null,
+                null,
+                null, null);
+    }
+
+    private void registerDefaultSink() throws IOException {
+        registerDefaultSinkWithPackageUrl(null);
+    }
+
+    private void registerDefaultSinkWithPackageUrl(String packageUrl) throws IOException {
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            resource.registerSink(
+                    tenant,
+                    namespace,
+                    sink,
+                    inputStream,
+                    mockedFormData,
+                    packageUrl,
+                    sinkConfig,
+                    null);
+        }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink test-sink already exists")
@@ -446,7 +434,7 @@ public class SinkApiV3ResourceTest {
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
 
             registerDefaultSink();
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
@@ -454,18 +442,20 @@ public class SinkApiV3ResourceTest {
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "upload failure")
     public void testRegisterSinkUploadFailure() throws Exception {
+        mockInstanceUtils();
         try {
-            mockStatic(Utils.class);
-            doThrow(new IOException("upload failure")).when(Utils.class);
-            Utils.uploadFileToBookkeeper(
-                    anyString(),
-                any(File.class),
-                any(Namespace.class));
+            mockWorkerUtils(ctx -> {
+                    ctx.when(() -> WorkerUtils.uploadFileToBookkeeper(
+                            anyString(),
+                            any(File.class),
+                            any(Namespace.class)))
+                            .thenThrow(new IOException("upload failure"));
+            });
 
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
 
             registerDefaultSink();
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.INTERNAL_SERVER_ERROR);
             throw re;
         }
@@ -473,32 +463,19 @@ public class SinkApiV3ResourceTest {
 
     @Test
     public void testRegisterSinkSuccess() throws Exception {
-        mockStatic(Utils.class);
-        doNothing().when(Utils.class);
-        Utils.uploadFileToBookkeeper(
-                anyString(),
-                any(File.class),
-                any(Namespace.class));
+        mockInstanceUtils();
+        mockWorkerUtils();
 
         when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
-
-        RequestResult rr = new RequestResult()
-            .setSuccess(true)
-            .setMessage("source registered");
-        CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-        when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
 
         registerDefaultSink();
     }
 
     @Test
     public void testRegisterSinkConflictingFields() throws Exception {
-        mockStatic(Utils.class);
-        doNothing().when(Utils.class);
-        Utils.uploadFileToBookkeeper(
-                anyString(),
-                any(File.class),
-                any(Namespace.class));
+        mockInstanceUtils();
+        mockWorkerUtils();
+
         String actualTenant = "DIFFERENT_TENANT";
         String actualNamespace = "DIFFERENT_NAMESPACE";
         String actualName = "DIFFERENT_NAME";
@@ -507,76 +484,133 @@ public class SinkApiV3ResourceTest {
         when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
         when(mockedManager.containsFunction(eq(actualTenant), eq(actualNamespace), eq(actualName))).thenReturn(false);
 
-        RequestResult rr = new RequestResult()
-                .setSuccess(true)
-                .setMessage("source registered");
-        CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-        when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
-
-        SinkConfig sinkConfig = new SinkConfig();
-        sinkConfig.setTenant(tenant);
-        sinkConfig.setNamespace(namespace);
-        sinkConfig.setName(sink);
-        sinkConfig.setClassName(className);
-        sinkConfig.setParallelism(parallelism);
-        sinkConfig.setTopicToSerdeClassName(topicsToSerDeClassName);
-        resource.registerFunction(
-                actualTenant,
-                actualNamespace,
-                actualName,
-                new FileInputStream(JAR_FILE_PATH),
-                mockedFormData,
-                null,
-                null,
-                new Gson().toJson(sinkConfig),
-                null);
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            resource.registerSink(
+                    actualTenant,
+                    actualNamespace,
+                    actualName,
+                    inputStream,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null);
+        }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "sink failed to register")
     public void testRegisterSinkFailure() throws Exception {
+        mockInstanceUtils();
         try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.uploadFileToBookkeeper(
-                    anyString(),
-                    any(File.class),
-                    any(Namespace.class));
+            mockWorkerUtils();
 
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
 
-            RequestResult rr = new RequestResult()
-                .setSuccess(false)
-                .setMessage("sink failed to register");
-            CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-            when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
+            doThrow(new IllegalArgumentException("sink failed to register"))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
 
             registerDefaultSink();
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "java.io.IOException: Function registeration interrupted")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Function registration "
+            + "interrupted")
     public void testRegisterSinkInterrupted() throws Exception {
+        mockInstanceUtils();
         try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.uploadFileToBookkeeper(
-                    anyString(),
-                    any(File.class),
-                    any(Namespace.class));
+            mockWorkerUtils();
 
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
 
-            CompletableFuture<RequestResult> requestResult = FutureUtil.failedFuture(
-                new IOException("Function registeration interrupted"));
-            when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
+            doThrow(new IllegalStateException("Function registration interrupted"))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
 
             registerDefaultSink();
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.INTERNAL_SERVER_ERROR);
             throw re;
+        }
+    }
+
+    @Test(timeOut = 20000)
+    public void testRegisterSinkSuccessWithPackageName() throws IOException {
+        mockInstanceUtils();
+        registerDefaultSinkWithPackageUrl("sink://public/default/test@v1");
+    }
+
+    @Test(timeOut = 20000)
+    public void testRegisterSinkFailedWithWrongPackageName() throws PulsarAdminException, IOException {
+        try {
+            doThrow(new PulsarAdminException("package name is invalid"))
+                    .when(mockedPackages).download(anyString(), anyString());
+            registerDefaultSinkWithPackageUrl("function://");
+        } catch (RestException e) {
+            // expected exception
+            assertEquals(e.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
+        }
+    }
+
+    @Test
+    public void testRegisterSinkSuccessWithTransformFunction() throws Exception {
+        mockInstanceUtils();
+        mockWorkerUtils();
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
+
+        registerBuiltinConnector("recordfunction", RecordFunction.class.getName());
+        registerBuiltinFunction("transform", RecordFunction.class.getName());
+
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        sinkConfig.setSinkType("builtin://recordfunction");
+        sinkConfig.setTransformFunction("builtin://transform");
+        sinkConfig.setTransformFunctionConfig("{\"dummy\": \"dummy\"}");
+
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            resource.registerSink(
+                    tenant,
+                    namespace,
+                    sink,
+                    inputStream,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null);
+        }
+    }
+
+    @Test(expectedExceptions = RestException.class,
+            expectedExceptionsMessageRegExp = "Sink transform function output must be of type Record")
+    public void testRegisterSinkFailureWithInvalidTransformFunction() throws Exception {
+        mockInstanceUtils();
+        mockWorkerUtils();
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
+
+        registerBuiltinFunction("transform", getPulsarApiExamplesNar());
+
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        sinkConfig.setTransformFunction("builtin://transform");
+        sinkConfig.setTransformFunctionConfig("{\"dummy\": \"dummy\"}");
+
+        try {
+            try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+                resource.registerSink(
+                        tenant,
+                        namespace,
+                        sink,
+                        inputStream,
+                        mockedFormData,
+                        null,
+                        sinkConfig,
+                        null);
+            }
+        } catch (RestException e) {
+            // expected exception
+            assertEquals(e.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
+            throw e;
         }
     }
 
@@ -585,149 +619,143 @@ public class SinkApiV3ResourceTest {
     //
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Tenant is not provided")
-    public void testUpdateSinkMissingTenant() throws IOException {
+    public void testUpdateSinkMissingTenant() throws Exception {
         try {
             testUpdateSinkMissingArguments(
-            null,
-            namespace,
-                sink,
-            mockedInputStream,
-            mockedFormData,
-            topicsToSerDeClassName,
-            className,
-            parallelism,
-                "Tenant is not provided");
-        } catch (RestException re){
+                    null,
+                    namespace,
+                    sink,
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
+                    "Tenant is not provided");
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Namespace is not provided")
-    public void testUpdateSinkMissingNamespace() throws IOException {
+    public void testUpdateSinkMissingNamespace() throws Exception {
         try {
             testUpdateSinkMissingArguments(
-            tenant,
-            null,
-                sink,
-            mockedInputStream,
-            mockedFormData,
-            topicsToSerDeClassName,
-            className,
-            parallelism,
-                "Namespace is not provided");
-        } catch (RestException re){
-            assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
-            throw re;
-        }
-    }
-
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink Name is not provided")
-    public void testUpdateSinkMissingFunctionName() throws IOException {
-        try {
-            testUpdateSinkMissingArguments(
-            tenant,
-            namespace,
-            null,
-            mockedInputStream,
-            mockedFormData,
-            topicsToSerDeClassName,
-            className,
-            parallelism,
-                "Sink Name is not provided");
-        } catch (RestException re){
-            assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
-            throw re;
-        }
-    }
-
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Update contains no change")
-    public void testUpdateSinkMissingPackage() throws IOException {
-        try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.downloadFromBookkeeper(any(Namespace.class), any(File.class), anyString());
-
-            testUpdateSinkMissingArguments(
-                tenant,
-                namespace,
+                    tenant,
+                    null,
                     sink,
-                null,
-                mockedFormData,
-                topicsToSerDeClassName,
-                null,
-                parallelism,
-                    "Update contains no change");
-        } catch (RestException re){
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
+                    "Namespace is not provided");
+        } catch (RestException re) {
+            assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
+            throw re;
+        }
+    }
+
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink name is not provided")
+    public void testUpdateSinkMissingFunctionName() throws Exception {
+        try {
+            testUpdateSinkMissingArguments(
+                    tenant,
+                    namespace,
+                    null,
+                    mockedInputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
+                    "Sink name is not provided");
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Update contains no change")
-    public void testUpdateSinkMissingInputs() throws IOException {
+    public void testUpdateSinkMissingPackage() throws Exception {
         try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.downloadFromBookkeeper(any(Namespace.class), any(File.class), anyString());
+            mockWorkerUtils();
 
             testUpdateSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                null,
-                mockedFormData,
-                null,
-                null,
-                parallelism,
-                "Update contains no change");
-        } catch (RestException re){
+                    tenant,
+                    namespace,
+                    sink,
+                    null,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    null,
+                    parallelism,
+                    "Update contains no change");
+        } catch (RestException re) {
+            assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
+            throw re;
+        }
+    }
+
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Update contains no change")
+    public void testUpdateSinkMissingInputs() throws Exception {
+        try {
+            mockWorkerUtils();
+
+            testUpdateSinkMissingArguments(
+                    tenant,
+                    namespace,
+                    sink,
+                    null,
+                    mockedFormData,
+                    null,
+                    null,
+                    parallelism,
+                    "Update contains no change");
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Input Topics cannot be altered")
-    public void testUpdateSinkDifferentInputs() throws IOException {
+    public void testUpdateSinkDifferentInputs() throws Exception {
         try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.downloadFromBookkeeper(any(Namespace.class), any(File.class), anyString());
+            mockWorkerUtils();
 
             Map<String, String> inputTopics = new HashMap<>();
-            inputTopics.put("DifferntTopic", DEFAULT_SERDE);
+            inputTopics.put("DifferentTopic", DEFAULT_SERDE);
             testUpdateSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                null,
-                mockedFormData,
-                inputTopics,
-                className,
-                parallelism,
-                "Input Topics cannot be altered");
-        } catch (RestException re){
+                    tenant,
+                    namespace,
+                    sink,
+                    null,
+                    mockedFormData,
+                    inputTopics,
+                    CASSANDRA_STRING_SINK,
+                    parallelism,
+                    "Input Topics cannot be altered");
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
     @Test
-    public void testUpdateSinkDifferentParallelism() throws IOException {
-        mockStatic(Utils.class);
-        doNothing().when(Utils.class);
-        Utils.downloadFromBookkeeper(any(Namespace.class), any(File.class), anyString());
+    public void testUpdateSinkDifferentParallelism() throws Exception {
+        mockWorkerUtils();
 
-        testUpdateSinkMissingArguments(
-                tenant,
-                namespace,
-                sink,
-                null,
-                mockedFormData,
-                topicsToSerDeClassName,
-                className,
-                parallelism + 1,
-                null);
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            testUpdateSinkMissingArguments(
+                    tenant,
+                    namespace,
+                    sink,
+                    inputStream,
+                    mockedFormData,
+                    topicsToSerDeClassName,
+                    CASSANDRA_STRING_SINK,
+                    parallelism + 1,
+                    null);
+        }
     }
 
     private void testUpdateSinkMissingArguments(
@@ -739,26 +767,8 @@ public class SinkApiV3ResourceTest {
             Map<String, String> inputTopicsMap,
             String className,
             Integer parallelism,
-            String expectedError) throws IOException {
-        mockStatic(ConnectorUtils.class);
-        doReturn(CassandraStringSink.class.getName()).when(ConnectorUtils.class);
-        ConnectorUtils.getIOSinkClass(any(NarClassLoader.class));
-
-        mockStatic(org.apache.pulsar.functions.utils.Utils.class);
-        doReturn(String.class).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.getSinkType(anyString(), any(NarClassLoader.class));
-
-        doReturn(mock(NarClassLoader.class)).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.extractNarClassLoader(any(Path.class), anyString(), any(File.class));
-
-        doReturn(ATLEAST_ONCE).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.convertProcessingGuarantee(FunctionConfig.ProcessingGuarantees.ATLEAST_ONCE);
-
-
-        this.mockedFunctionMetaData = FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
-        when(mockedManager.getFunctionMetaData(any(), any(), any())).thenReturn(mockedFunctionMetaData);
-
-        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+            String expectedError) throws Exception {
+        mockFunctionCommon(tenant, namespace, sink);
 
         SinkConfig sinkConfig = new SinkConfig();
         if (tenant != null) {
@@ -780,68 +790,49 @@ public class SinkApiV3ResourceTest {
             sinkConfig.setParallelism(parallelism);
         }
 
-        if (expectedError == null) {
-            RequestResult rr = new RequestResult()
-                    .setSuccess(true)
-                    .setMessage("source registered");
-            CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-            when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
+        if (expectedError != null) {
+            doThrow(new IllegalArgumentException(expectedError))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
         }
 
-        resource.updateFunction(
-            tenant,
-            namespace,
-            sink,
-            inputStream,
-            details,
-            null,
-            null,
-            new Gson().toJson(sinkConfig),
-                null);
+        resource.updateSink(
+                tenant,
+                namespace,
+                sink,
+                inputStream,
+                details,
+                null,
+                sinkConfig,
+                null, null);
 
     }
 
-    private void updateDefaultSink() throws IOException {
-        SinkConfig sinkConfig = new SinkConfig();
-        sinkConfig.setTenant(tenant);
-        sinkConfig.setNamespace(namespace);
-        sinkConfig.setName(sink);
-        sinkConfig.setClassName(className);
-        sinkConfig.setParallelism(parallelism);
-        sinkConfig.setTopicToSerdeClassName(topicsToSerDeClassName);
+    private void updateDefaultSink() throws Exception {
+        updateDefaultSinkWithPackageUrl(null);
+    }
 
-        mockStatic(ConnectorUtils.class);
-        doReturn(CassandraStringSink.class.getName()).when(ConnectorUtils.class);
-        ConnectorUtils.getIOSinkClass(any(NarClassLoader.class));
+    private void updateDefaultSinkWithPackageUrl(String packageUrl) throws Exception {
+        SinkConfig sinkConfig = createDefaultSinkConfig();
 
-        mockStatic(org.apache.pulsar.functions.utils.Utils.class);
-        doReturn(String.class).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.getSinkType(anyString(), any(NarClassLoader.class));
-
-        doReturn(mock(NarClassLoader.class)).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.extractNarClassLoader(any(Path.class), anyString(), any(File.class));
-
-        doReturn(ATLEAST_ONCE).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.convertProcessingGuarantee(FunctionConfig.ProcessingGuarantees.ATLEAST_ONCE);
-
-
-        this.mockedFunctionMetaData = FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
+        this.mockedFunctionMetaData =
+                FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
         when(mockedManager.getFunctionMetaData(any(), any(), any())).thenReturn(mockedFunctionMetaData);
 
-        resource.updateFunction(
-            tenant,
-            namespace,
-                sink,
-                new FileInputStream(JAR_FILE_PATH),
-            mockedFormData,
-            null,
-            null,
-            new Gson().toJson(sinkConfig),
-                null);
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            resource.updateSink(
+                    tenant,
+                    namespace,
+                    sink,
+                    inputStream,
+                    mockedFormData,
+                    packageUrl,
+                    sinkConfig,
+                    null, null);
+        }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink test-sink doesn't exist")
-    public void testUpdateNotExistedSink() throws IOException {
+    public void testUpdateNotExistedSink() throws Exception {
         try {
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
             updateDefaultSink();
@@ -854,12 +845,13 @@ public class SinkApiV3ResourceTest {
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "upload failure")
     public void testUpdateSinkUploadFailure() throws Exception {
         try {
-            mockStatic(Utils.class);
-            doThrow(new IOException("upload failure")).when(Utils.class);
-            Utils.uploadFileToBookkeeper(
-                    anyString(),
-                    any(File.class),
-                    any(Namespace.class));
+            mockWorkerUtils(ctx -> {
+                ctx.when(() -> WorkerUtils.uploadFileToBookkeeper(
+                                anyString(),
+                                any(File.class),
+                                any(Namespace.class)))
+                        .thenThrow(new IOException("upload failure"));
+            });
 
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
 
@@ -872,92 +864,46 @@ public class SinkApiV3ResourceTest {
 
     @Test
     public void testUpdateSinkSuccess() throws Exception {
-        mockStatic(Utils.class);
-        doNothing().when(Utils.class);
-        Utils.uploadFileToBookkeeper(
-                anyString(),
-                any(File.class),
-                any(Namespace.class));
+        mockWorkerUtils();
 
         when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
-
-        RequestResult rr = new RequestResult()
-            .setSuccess(true)
-            .setMessage("source registered");
-        CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-        when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
 
         updateDefaultSink();
     }
 
     @Test
-    public void testUpdateSinkWithUrl() throws IOException {
+    public void testUpdateSinkWithUrl() throws Exception {
         Configurator.setRootLevel(Level.DEBUG);
 
-        String filePackageUrl = "file://" + JAR_FILE_PATH;
+        String filePackageUrl = getPulsarIOCassandraNar().toURI().toString();
 
-        SinkConfig sinkConfig = new SinkConfig();
-        sinkConfig.setTopicToSerdeClassName(topicsToSerDeClassName);
-        sinkConfig.setTenant(tenant);
-        sinkConfig.setNamespace(namespace);
-        sinkConfig.setName(sink);
-        sinkConfig.setClassName(className);
-        sinkConfig.setParallelism(parallelism);
+        SinkConfig sinkConfig = createDefaultSinkConfig();
 
         when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
-        mockStatic(ConnectorUtils.class);
-        doReturn(CassandraStringSink.class.getName()).when(ConnectorUtils.class);
-        ConnectorUtils.getIOSinkClass(any(NarClassLoader.class));
 
-        mockStatic(org.apache.pulsar.functions.utils.Utils.class);
-        doReturn(String.class).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.getSinkType(anyString(), any(NarClassLoader.class));
-
-        doReturn(mock(NarClassLoader.class)).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.extractNarClassLoader(any(Path.class), anyString(), any(File.class));
-
-        doReturn(ATLEAST_ONCE).when(org.apache.pulsar.functions.utils.Utils.class);
-        org.apache.pulsar.functions.utils.Utils.convertProcessingGuarantee(FunctionConfig.ProcessingGuarantees.ATLEAST_ONCE);
-
-
-        this.mockedFunctionMetaData = FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
+        this.mockedFunctionMetaData =
+                FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
         when(mockedManager.getFunctionMetaData(any(), any(), any())).thenReturn(mockedFunctionMetaData);
 
-        RequestResult rr = new RequestResult()
-                .setSuccess(true)
-                .setMessage("source registered");
-            CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-            when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
-
-        resource.updateFunction(
-            tenant,
-            namespace,
+        resource.updateSink(
+                tenant,
+                namespace,
                 sink,
-            null,
-            null,
-            filePackageUrl,
-            null,
-            new Gson().toJson(sinkConfig),
-                null);
+                null,
+                null,
+                filePackageUrl,
+                sinkConfig,
+                null, null);
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "sink failed to register")
     public void testUpdateSinkFailure() throws Exception {
         try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.uploadFileToBookkeeper(
-                    anyString(),
-                    any(File.class),
-                    any(Namespace.class));
-
+            mockWorkerUtils();
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
 
-            RequestResult rr = new RequestResult()
-                    .setSuccess(false)
-                    .setMessage("sink failed to register");
-            CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-            when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
+            doThrow(new IllegalArgumentException("sink failed to register"))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
 
             updateDefaultSink();
         } catch (RestException re) {
@@ -966,26 +912,70 @@ public class SinkApiV3ResourceTest {
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "java.io.IOException: Function registeration interrupted")
+    @Test(timeOut = 20000)
+    public void testUpdateSinkSuccessWithPackageName() throws Exception {
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+        updateDefaultSinkWithPackageUrl("function://public/default/test@v1");
+    }
+
+    @Test(timeOut = 20000)
+    public void testUpdateSinkFailedWithWrongPackageName() throws Exception {
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+        try {
+            doThrow(new PulsarAdminException("package name is invalid"))
+                    .when(mockedPackages).download(anyString(), anyString());
+            updateDefaultSinkWithPackageUrl("function://");
+        } catch (RestException e) {
+            // expected exception
+            assertEquals(e.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
+        }
+    }
+
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Function registration "
+            + "interrupted")
     public void testUpdateSinkInterrupted() throws Exception {
         try {
-            mockStatic(Utils.class);
-            doNothing().when(Utils.class);
-            Utils.uploadFileToBookkeeper(
-                    anyString(),
-                    any(File.class),
-                    any(Namespace.class));
+            mockWorkerUtils();
 
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
 
-            CompletableFuture<RequestResult> requestResult = FutureUtil.failedFuture(
-                    new IOException("Function registeration interrupted"));
-            when(mockedManager.updateFunction(any(FunctionMetaData.class))).thenReturn(requestResult);
+            doThrow(new IllegalStateException("Function registration interrupted"))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
 
             updateDefaultSink();
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.INTERNAL_SERVER_ERROR);
             throw re;
+        }
+    }
+
+    @Test
+    public void testUpdateSinkDifferentTransformFunction() throws Exception {
+        mockWorkerUtils();
+
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        sinkConfig.setTransformFunction("builtin://transform");
+        sinkConfig.setTransformFunctionConfig("{\"dummy\": \"dummy\"}");
+
+        registerBuiltinFunction("transform", RecordFunction.class.getName());
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+        this.mockedFunctionMetaData =
+                FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
+        when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink))).thenReturn(mockedFunctionMetaData);
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            resource.updateSink(
+                    tenant,
+                    namespace,
+                    sink,
+                    inputStream,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null, null);
         }
     }
 
@@ -997,9 +987,9 @@ public class SinkApiV3ResourceTest {
     public void testDeregisterSinkMissingTenant() {
         try {
             testDeregisterSinkMissingArguments(
-                null,
-                namespace,
-                sink
+                    null,
+                    namespace,
+                    sink
             );
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
@@ -1011,8 +1001,8 @@ public class SinkApiV3ResourceTest {
     public void testDeregisterSinkMissingNamespace() {
         try {
             testDeregisterSinkMissingArguments(
-                tenant,
-                null,
+                    tenant,
+                    null,
                     sink
             );
         } catch (RestException re) {
@@ -1021,13 +1011,13 @@ public class SinkApiV3ResourceTest {
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink Name is not provided")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink name is not provided")
     public void testDeregisterSinkMissingFunctionName() {
         try {
             testDeregisterSinkMissingArguments(
-                tenant,
-                namespace,
-                null
+                    tenant,
+                    namespace,
+                    null
             );
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
@@ -1041,17 +1031,17 @@ public class SinkApiV3ResourceTest {
             String sink
     ) {
         resource.deregisterFunction(
-            tenant,
-            namespace,
-            sink,
+                tenant,
+                namespace,
+                sink,
                 null);
 
     }
 
     private void deregisterDefaultSink() {
         resource.deregisterFunction(
-            tenant,
-            namespace,
+                tenant,
+                namespace,
                 sink,
                 null);
     }
@@ -1068,26 +1058,21 @@ public class SinkApiV3ResourceTest {
     }
 
     @Test
-    public void testDeregisterSinkSuccess() {
+    public void testDeregisterSinkSuccess() throws Exception {
         when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
-
-        RequestResult rr = new RequestResult()
-            .setSuccess(true)
-            .setMessage("source deregistered");
-        CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-        when(mockedManager.deregisterFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(requestResult);
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "sink failed to deregister")
-    public void testDeregisterSinkFailure() {
+    public void testDeregisterSinkFailure() throws Exception {
+        mockInstanceUtils();
         try {
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
 
-            RequestResult rr = new RequestResult()
-                .setSuccess(false)
-                .setMessage("sink failed to deregister");
-            CompletableFuture<RequestResult> requestResult = CompletableFuture.completedFuture(rr);
-            when(mockedManager.deregisterFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(requestResult);
+            when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                    .thenReturn(FunctionMetaData.newBuilder().build());
+
+            doThrow(new IllegalArgumentException("sink failed to deregister"))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
 
             deregisterDefaultSink();
         } catch (RestException re) {
@@ -1096,19 +1081,125 @@ public class SinkApiV3ResourceTest {
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Function deregistration interrupted")
-    public void testDeregisterSinkInterrupted() {
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Function deregistration "
+            + "interrupted")
+    public void testDeregisterSinkInterrupted() throws Exception {
+        mockInstanceUtils();
         try {
             when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
 
-            CompletableFuture<RequestResult> requestResult = FutureUtil.failedFuture(
-                new IOException("Function deregistration interrupted"));
-            when(mockedManager.deregisterFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(requestResult);
+            when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                    .thenReturn(FunctionMetaData.newBuilder().build());
+
+            doThrow(new IllegalStateException("Function deregistration interrupted"))
+                    .when(mockedManager).updateFunctionOnLeader(any(FunctionMetaData.class), Mockito.anyBoolean());
 
             deregisterDefaultSink();
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.INTERNAL_SERVER_ERROR);
             throw re;
+        }
+    }
+
+    @Test
+    public void testDeregisterSinkBKPackageCleanup() {
+        mockInstanceUtils();
+        try (final MockedStatic<WorkerUtils> ctx = Mockito.mockStatic(WorkerUtils.class)) {
+
+            when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+            String packagePath =
+                    "public/default/test/591541f0-c7c5-40c0-983b-610c722f90b0-pulsar-io-batch-data-generator-2.7.0.nar";
+            String transformFunctionPackagePath =
+                    "public/default/test/591541f0-c7c5-40c0-983b-610c722f90b0-test-function.nar";
+            FunctionMetaData functionMetaData = FunctionMetaData.newBuilder()
+                    .setPackageLocation(Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath))
+                    .setTransformFunctionPackageLocation(Function.PackageLocationMetaData.newBuilder()
+                            .setPackagePath(transformFunctionPackagePath))
+                    .build();
+            when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                    .thenReturn(functionMetaData);
+
+            deregisterDefaultSink();
+
+            ctx.verify(() -> WorkerUtils.deleteFromBookkeeper(any(), eq(packagePath)), times(1));
+            ctx.verify(() -> WorkerUtils.deleteFromBookkeeper(any(), eq(transformFunctionPackagePath)), times(1));
+        }
+    }
+
+    @Test
+    public void testDeregisterBuiltinSinkBKPackageCleanup() {
+        mockInstanceUtils();
+
+        try (final MockedStatic<WorkerUtils> ctx = Mockito.mockStatic(WorkerUtils.class)) {
+            when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+            String packagePath = String.format("%s://data-generator", Utils.BUILTIN);
+            String transformFunctionPackagePath = String.format("%s://exclamation", Utils.BUILTIN);
+            FunctionMetaData functionMetaData = FunctionMetaData.newBuilder()
+                    .setPackageLocation(Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath))
+                    .setTransformFunctionPackageLocation(Function.PackageLocationMetaData.newBuilder()
+                            .setPackagePath(transformFunctionPackagePath))
+                    .build();
+            when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                    .thenReturn(functionMetaData);
+
+            deregisterDefaultSink();
+
+            // if the sink is a builtin sink we shouldn't try to clean it up
+            ctx.verify(() -> WorkerUtils.deleteFromBookkeeper(any(), anyString()), times(0));
+        }
+    }
+
+    @Test
+    public void testDeregisterHTTPSinkBKPackageCleanup() {
+        mockInstanceUtils();
+
+        try (final MockedStatic<WorkerUtils> ctx = Mockito.mockStatic(WorkerUtils.class)) {
+
+            when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+            String packagePath = "http://foo.com/connector.jar";
+            String transformFunctionPackagePath = "http://foo.com/function.jar";
+            FunctionMetaData functionMetaData = FunctionMetaData.newBuilder()
+                    .setPackageLocation(Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath))
+                    .setTransformFunctionPackageLocation(Function.PackageLocationMetaData.newBuilder()
+                            .setPackagePath(transformFunctionPackagePath))
+                    .build();
+
+            when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                    .thenReturn(functionMetaData);
+
+            deregisterDefaultSink();
+
+            // if the sink is a is download from a http url, we shouldn't try to clean it up
+            ctx.verify(() -> WorkerUtils.deleteFromBookkeeper(any(), anyString()), times(0));
+        }
+    }
+
+    @Test
+    public void testDeregisterFileSinkBKPackageCleanup() {
+        mockInstanceUtils();
+
+        try (final MockedStatic<WorkerUtils> ctx = Mockito.mockStatic(WorkerUtils.class)) {
+
+            when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+            String packagePath = "file://foo/connector.jar";
+            String transformFunctionPackagePath = "file://foo/function.jar";
+            FunctionMetaData functionMetaData = FunctionMetaData.newBuilder()
+                    .setPackageLocation(Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath))
+                    .setTransformFunctionPackageLocation(Function.PackageLocationMetaData.newBuilder()
+                            .setPackagePath(transformFunctionPackagePath))
+                    .build();
+
+            when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                    .thenReturn(functionMetaData);
+
+            deregisterDefaultSink();
+
+            // if the sink package has a file url, we shouldn't try to clean it up
+            ctx.verify(() -> WorkerUtils.deleteFromBookkeeper(any(), eq(packagePath)), times(0));
         }
     }
 
@@ -1120,8 +1211,8 @@ public class SinkApiV3ResourceTest {
     public void testGetSinkMissingTenant() {
         try {
             testGetSinkMissingArguments(
-                null,
-                namespace,
+                    null,
+                    namespace,
                     sink
             );
         } catch (RestException re) {
@@ -1144,14 +1235,14 @@ public class SinkApiV3ResourceTest {
         }
     }
 
-    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink Name is not provided")
+    @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Sink name is not provided")
     public void testGetSinkMissingFunctionName() {
         try {
 
             testGetSinkMissingArguments(
-                tenant,
-                namespace,
-                null
+                    tenant,
+                    namespace,
+                    null
             );
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
@@ -1165,18 +1256,20 @@ public class SinkApiV3ResourceTest {
             String sink
     ) {
         resource.getFunctionInfo(
-            tenant,
-            namespace,
-            sink
+                tenant,
+                namespace,
+                sink,
+                AuthenticationParameters.builder().build()
         );
 
     }
 
     private SinkConfig getDefaultSinkInfo() {
         return resource.getSinkInfo(
-            tenant,
-            namespace,
-                sink
+                tenant,
+                namespace,
+                sink,
+                AuthenticationParameters.builder().build()
         );
     }
 
@@ -1199,9 +1292,9 @@ public class SinkApiV3ResourceTest {
                 .setSubscriptionType(Function.SubscriptionType.SHARED)
                 .setSubscriptionName(subscriptionName)
                 .putInputSpecs("input", Function.ConsumerSpec.newBuilder()
-                .setSerdeClassName(DEFAULT_SERDE)
-                .setIsRegexPattern(false)
-                .build()).build();
+                        .setSerdeClassName(DEFAULT_SERDE)
+                        .setIsRegexPattern(false)
+                        .build()).build();
         Function.SinkSpec sinkSpec = Function.SinkSpec.newBuilder()
                 .setBuiltin("jdbc")
                 .build();
@@ -1216,17 +1309,21 @@ public class SinkApiV3ResourceTest {
                 .setRuntime(FunctionDetails.Runtime.JAVA)
                 .setSource(sourceSpec).build();
         FunctionMetaData metaData = FunctionMetaData.newBuilder()
-            .setCreateTime(System.currentTimeMillis())
-            .setFunctionDetails(functionDetails)
-            .setPackageLocation(Function.PackageLocationMetaData.newBuilder().setPackagePath("/path/to/package"))
-            .setVersion(1234)
-            .build();
+                .setCreateTime(System.currentTimeMillis())
+                .setFunctionDetails(functionDetails)
+                .setPackageLocation(Function.PackageLocationMetaData.newBuilder().setPackagePath("/path/to/package"))
+                .setVersion(1234)
+                .build();
         when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink))).thenReturn(metaData);
 
         getDefaultSinkInfo();
+
+        assertNotNull(getDefaultSinkInfo().getInputs());
+        assertEquals(getDefaultSinkInfo().getInputs(), Collections.singleton("input"));
+
         assertEquals(
-            SinkConfigUtils.convertFromDetails(functionDetails),
-            getDefaultSinkInfo());
+                SinkConfigUtils.convertFromDetails(functionDetails),
+                getDefaultSinkInfo());
     }
 
     //
@@ -1237,10 +1334,10 @@ public class SinkApiV3ResourceTest {
     public void testListSinksMissingTenant() {
         try {
             testListSinksMissingArguments(
-                null,
-                namespace
+                    null,
+                    namespace
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
@@ -1250,10 +1347,10 @@ public class SinkApiV3ResourceTest {
     public void testListFunctionsMissingNamespace() {
         try {
             testListSinksMissingArguments(
-            tenant,
-            null
+                    tenant,
+                    null
             );
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
@@ -1264,21 +1361,24 @@ public class SinkApiV3ResourceTest {
             String namespace
     ) {
         resource.listFunctions(
-            tenant,
-            namespace
+                tenant,
+                namespace,
+                AuthenticationParameters.builder().build()
         );
 
     }
 
     private List<String> listDefaultSinks() {
         return resource.listFunctions(
-            tenant,
-            namespace
+                tenant,
+                namespace,
+                AuthenticationParameters.builder().build()
         );
     }
 
     @Test
     public void testListSinksSuccess() {
+        mockInstanceUtils();
         final List<String> functions = Lists.newArrayList("test-1", "test-2");
         final List<FunctionMetaData> functionMetaDataList = new LinkedList<>();
         functionMetaDataList.add(FunctionMetaData.newBuilder().setFunctionDetails(
@@ -1307,31 +1407,38 @@ public class SinkApiV3ResourceTest {
                 FunctionDetails.newBuilder().setName("test-3").build()).build();
         functionMetaDataList.add(f3);
         when(mockedManager.listFunctions(eq(tenant), eq(namespace))).thenReturn(functionMetaDataList);
-        doReturn(org.apache.pulsar.functions.utils.Utils.ComponentType.SOURCE).when(this.resource).calculateSubjectType(f1);
-        doReturn(org.apache.pulsar.functions.utils.Utils.ComponentType.FUNCTION).when(this.resource).calculateSubjectType(f2);
-        doReturn(org.apache.pulsar.functions.utils.Utils.ComponentType.SINK).when(this.resource).calculateSubjectType(f3);
+
+        mockStatic(InstanceUtils.class, ctx -> {
+            ctx.when(() -> InstanceUtils.calculateSubjectType(eq(f1.getFunctionDetails())))
+                    .thenReturn(FunctionDetails.ComponentType.SOURCE);
+            ctx.when(() -> InstanceUtils.calculateSubjectType(eq(f2.getFunctionDetails())))
+                    .thenReturn(FunctionDetails.ComponentType.FUNCTION);
+            ctx.when(() -> InstanceUtils.calculateSubjectType(eq(f3.getFunctionDetails())))
+                    .thenReturn(FunctionDetails.ComponentType.SINK);
+
+        });
 
         List<String> sinkList = listDefaultSinks();
         assertEquals(functions, sinkList);
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Namespace does not exist")
-    public void testRegisterFunctionNonExistingNamespace() throws Exception {
+    public void testregisterSinkNonExistingNamespace() throws Exception {
         try {
             this.namespaceList.clear();
             registerDefaultSink();
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
     }
 
     @Test(expectedExceptions = RestException.class, expectedExceptionsMessageRegExp = "Tenant does not exist")
-    public void testRegisterFunctionNonExistingTenant() throws Exception {
+    public void testregisterSinkNonExistingTenant() throws Exception {
         try {
             when(mockedTenants.getTenantInfo(any())).thenThrow(PulsarAdminException.NotFoundException.class);
             registerDefaultSink();
-        } catch (RestException re){
+        } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
         }
@@ -1342,14 +1449,167 @@ public class SinkApiV3ResourceTest {
         sinkConfig.setTenant(tenant);
         sinkConfig.setNamespace(namespace);
         sinkConfig.setName(sink);
-        sinkConfig.setClassName(className);
+        sinkConfig.setClassName(CASSANDRA_STRING_SINK);
         sinkConfig.setParallelism(parallelism);
         sinkConfig.setTopicToSerdeClassName(topicsToSerDeClassName);
         return sinkConfig;
     }
 
+    private void mockFunctionCommon(String tenant, String namespace, String sink) throws IOException {
+        this.mockedFunctionMetaData =
+                Function.FunctionMetaData.newBuilder().setFunctionDetails(createDefaultFunctionDetails()).build();
+        when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink))).thenReturn(mockedFunctionMetaData);
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+    }
+
     private FunctionDetails createDefaultFunctionDetails() throws IOException {
         return SinkConfigUtils.convert(createDefaultSinkConfig(),
-                new SinkConfigUtils.ExtractedSinkDetails(null, null));
+                new SinkConfigUtils.ExtractedSinkDetails(null, null, null));
+    }
+
+    /*
+    Externally managed runtime,
+    uploadBuiltinSinksSources == false
+    Make sure uploadFileToBookkeeper is not called
+    */
+    @Test
+    public void testRegisterSinkSuccessK8sNoUpload() throws Exception {
+        mockedWorkerService.getWorkerConfig().setUploadBuiltinSinksSources(false);
+
+        mockStatic(WorkerUtils.class, ctx -> {
+            ctx.when(() -> WorkerUtils.uploadFileToBookkeeper(
+                    anyString(),
+                    any(File.class),
+                    any(Namespace.class)))
+                    .thenThrow(new RuntimeException("uploadFileToBookkeeper triggered"));
+
+        });
+
+        registerBuiltinConnector("cassandra", getPulsarIOCassandraNar());
+
+        when(mockedRuntimeFactory.externallyManaged()).thenReturn(true);
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
+
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        sinkConfig.setArchive("builtin://cassandra");
+
+        resource.registerSink(
+                tenant,
+                namespace,
+                sink,
+                null,
+                mockedFormData,
+                null,
+                sinkConfig,
+                null);
+    }
+
+    /*
+    Externally managed runtime,
+    uploadBuiltinSinksSources == true
+    Make sure uploadFileToBookkeeper is called
+    */
+    @Test
+    public void testRegisterSinkSuccessK8sWithUpload() throws Exception {
+        final String injectedErrMsg = "uploadFileToBookkeeper triggered";
+        mockedWorkerService.getWorkerConfig().setUploadBuiltinSinksSources(true);
+
+        mockStatic(WorkerUtils.class, ctx -> {
+            ctx.when(() -> WorkerUtils.uploadFileToBookkeeper(
+                            anyString(),
+                            any(File.class),
+                            any(Namespace.class)))
+                    .thenThrow(new RuntimeException(injectedErrMsg));
+
+        });
+
+        registerBuiltinConnector("cassandra", getPulsarIOCassandraNar());
+
+        when(mockedRuntimeFactory.externallyManaged()).thenReturn(true);
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(false);
+
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+        sinkConfig.setArchive("builtin://cassandra");
+
+        try {
+            resource.registerSink(
+                    tenant,
+                    namespace,
+                    sink,
+                    null,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null);
+            Assert.fail();
+        } catch (RuntimeException e) {
+            Assert.assertEquals(e.getMessage(), injectedErrMsg);
+        }
+    }
+
+    @Test
+    public void testUpdateSinkWithNoChange() throws IOException {
+        mockWorkerUtils();
+
+        // No change on config,
+        SinkConfig sinkConfig = createDefaultSinkConfig();
+
+        mockStatic(SinkConfigUtils.class, ctx -> {
+            ctx.when(() -> SinkConfigUtils.convertFromDetails(any())).thenReturn(sinkConfig);
+        });
+
+        mockFunctionCommon(sinkConfig.getTenant(), sinkConfig.getNamespace(), sinkConfig.getName());
+
+        // config has not changes and don't update auth, should fail
+        try {
+            resource.updateSink(
+                    sinkConfig.getTenant(),
+                    sinkConfig.getNamespace(),
+                    sinkConfig.getName(),
+                    null,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null,
+                    null);
+            fail("Update without changes should fail");
+        } catch (RestException e) {
+            assertTrue(e.getMessage().contains("Update contains no change"));
+        }
+
+        try {
+            UpdateOptionsImpl updateOptions = new UpdateOptionsImpl();
+            updateOptions.setUpdateAuthData(false);
+            resource.updateSink(
+                    sinkConfig.getTenant(),
+                    sinkConfig.getNamespace(),
+                    sinkConfig.getName(),
+                    null,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null,
+                    updateOptions);
+            fail("Update without changes should fail");
+        } catch (RestException e) {
+            assertTrue(e.getMessage().contains("Update contains no change"));
+        }
+
+        // no changes but set the auth-update flag to true, should not fail
+        UpdateOptionsImpl updateOptions = new UpdateOptionsImpl();
+        updateOptions.setUpdateAuthData(true);
+        try (FileInputStream inputStream = new FileInputStream(getPulsarIOCassandraNar())) {
+            resource.updateSink(
+                    sinkConfig.getTenant(),
+                    sinkConfig.getNamespace(),
+                    sinkConfig.getName(),
+                    inputStream,
+                    mockedFormData,
+                    null,
+                    sinkConfig,
+                    null,
+                    updateOptions);
+        }
     }
 }

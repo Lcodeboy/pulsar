@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,12 +19,16 @@
 package org.apache.bookkeeper.mledger.offload.jcloud.impl;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.concurrent.TimeUnit;
+import org.apache.bookkeeper.mledger.LedgerOffloaderStats;
 import org.apache.bookkeeper.mledger.offload.jcloud.BackedInputStream;
-import org.apache.bookkeeper.mledger.offload.jcloud.impl.BlobStoreManagedLedgerOffloader.VersionCheck;
+import org.apache.bookkeeper.mledger.offload.jcloud.impl.DataBlockUtils.VersionCheck;
+import org.apache.pulsar.common.allocator.PulsarByteBufAllocator;
+import org.apache.pulsar.common.naming.TopicName;
 import org.jclouds.blobstore.BlobStore;
+import org.jclouds.blobstore.KeyNotFoundException;
 import org.jclouds.blobstore.domain.Blob;
 import org.jclouds.blobstore.options.GetOptions;
 import org.slf4j.Logger;
@@ -40,6 +44,9 @@ public class BlobStoreBackedInputStreamImpl extends BackedInputStream {
     private final ByteBuf buffer;
     private final long objectLen;
     private final int bufferSize;
+    private LedgerOffloaderStats offloaderStats;
+    private String managedLedgerName;
+    private String topicName;
 
     private long cursor;
     private long bufferOffsetStart;
@@ -52,11 +59,22 @@ public class BlobStoreBackedInputStreamImpl extends BackedInputStream {
         this.bucket = bucket;
         this.key = key;
         this.versionCheck = versionCheck;
-        this.buffer = PooledByteBufAllocator.DEFAULT.buffer(bufferSize, bufferSize);
+        this.buffer = PulsarByteBufAllocator.DEFAULT.buffer(bufferSize, bufferSize);
         this.objectLen = objectLen;
         this.bufferSize = bufferSize;
         this.cursor = 0;
         this.bufferOffsetStart = this.bufferOffsetEnd = -1;
+    }
+
+
+    public BlobStoreBackedInputStreamImpl(BlobStore blobStore, String bucket, String key,
+                                          VersionCheck versionCheck,
+                                          long objectLen, int bufferSize,
+                                          LedgerOffloaderStats offloaderStats, String managedLedgerName) {
+        this(blobStore, bucket, key, versionCheck, objectLen, bufferSize);
+        this.offloaderStats = offloaderStats;
+        this.managedLedgerName = managedLedgerName;
+        this.topicName = TopicName.fromPersistenceNamingEncoding(managedLedgerName);
     }
 
     /**
@@ -71,9 +89,16 @@ public class BlobStoreBackedInputStreamImpl extends BackedInputStream {
             long startRange = cursor;
             long endRange = Math.min(cursor + bufferSize - 1,
                                      objectLen - 1);
-
+            if (log.isDebugEnabled()) {
+                log.info("refillBufferIfNeeded {} - {} ({} bytes to fill)",
+                        startRange, endRange, (endRange - startRange));
+            }
             try {
+                long startReadTime = System.nanoTime();
                 Blob blob = blobStore.getBlob(bucket, key, new GetOptions().range(startRange, endRange));
+                if (blob == null) {
+                    throw new KeyNotFoundException(bucket, key, "");
+                }
                 versionCheck.check(key, blob);
 
                 try (InputStream stream = blob.getPayload().openStream()) {
@@ -82,16 +107,44 @@ public class BlobStoreBackedInputStreamImpl extends BackedInputStream {
                     bufferOffsetEnd = endRange;
                     long bytesRead = endRange - startRange + 1;
                     int bytesToCopy = (int) bytesRead;
-                    while (bytesToCopy > 0) {
-                        bytesToCopy -= buffer.writeBytes(stream, bytesToCopy);
-                    }
+                    fillBuffer(stream, bytesToCopy);
                     cursor += buffer.readableBytes();
                 }
+
+                // here we can get the metrics
+                // because JClouds streams the content
+                // and actually the HTTP call finishes when the stream is fully read
+                if (this.offloaderStats != null) {
+                    this.offloaderStats.recordReadOffloadDataLatency(topicName,
+                            System.nanoTime() - startReadTime, TimeUnit.NANOSECONDS);
+                    this.offloaderStats.recordReadOffloadBytes(topicName, endRange - startRange + 1);
+                }
             } catch (Throwable e) {
+                if (null != this.offloaderStats) {
+                    this.offloaderStats.recordReadOffloadError(this.topicName);
+                }
+                // If the blob is not found, the original exception is thrown and handled by the caller.
+                if (e instanceof KeyNotFoundException) {
+                    throw e;
+                }
                 throw new IOException("Error reading from BlobStore", e);
             }
         }
         return true;
+    }
+
+    void fillBuffer(InputStream is, int bytesToCopy) throws IOException {
+        while (bytesToCopy > 0) {
+            int writeBytes = buffer.writeBytes(is, bytesToCopy);
+            if (writeBytes < 0) {
+                break;
+            }
+            bytesToCopy -= writeBytes;
+        }
+    }
+
+    ByteBuf getBuffer() {
+        return buffer;
     }
 
     @Override
@@ -116,11 +169,13 @@ public class BlobStoreBackedInputStreamImpl extends BackedInputStream {
 
     @Override
     public void seek(long position) {
-        log.debug("Seeking to {} on {}/{}, current position {}", position, bucket, key, cursor);
+        log.debug("Seeking to {} on {}/{}, current position {} (bufStart:{}, bufEnd:{})",
+                position, bucket, key, cursor, bufferOffsetStart, bufferOffsetEnd);
         if (position >= bufferOffsetStart && position <= bufferOffsetEnd) {
             long newIndex = position - bufferOffsetStart;
-            buffer.readerIndex((int)newIndex);
+            buffer.readerIndex((int) newIndex);
         } else {
+            bufferOffsetStart = bufferOffsetEnd = -1;
             this.cursor = position;
             buffer.clear();
         }
@@ -136,8 +191,21 @@ public class BlobStoreBackedInputStreamImpl extends BackedInputStream {
         }
     }
 
+    public long getCurrentPosition() {
+        if (bufferOffsetStart != -1) {
+            return bufferOffsetStart + buffer.readerIndex();
+        }
+        return cursor + buffer.readerIndex();
+    }
+
     @Override
     public void close() {
         buffer.release();
+    }
+
+    @Override
+    public int available() throws IOException {
+        long available = objectLen - cursor + buffer.readableBytes();
+        return available > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) available;
     }
 }

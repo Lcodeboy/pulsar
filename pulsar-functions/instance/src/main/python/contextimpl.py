@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -23,6 +22,7 @@
 """contextimpl.py: ContextImpl class that implements the Context interface
 """
 
+import re
 import time
 import os
 import json
@@ -54,7 +54,6 @@ class ContextImpl(pulsar.Context):
     self.publish_producers = {}
     self.publish_serializers = {}
     self.message = None
-    self.current_input_topic_name = None
     self.current_start_time = None
     self.user_config = json.loads(instance_config.function_details.userConfig) \
       if instance_config.function_details.userConfig \
@@ -73,7 +72,6 @@ class ContextImpl(pulsar.Context):
   # Called on a per message basis to set the context for the current message
   def set_current_message_context(self, message, topic):
     self.message = message
-    self.current_input_topic_name = topic
     self.current_start_time = time.time()
 
   def get_message_id(self):
@@ -89,7 +87,23 @@ class ContextImpl(pulsar.Context):
     return self.message.properties()
 
   def get_current_message_topic_name(self):
-    return self.current_input_topic_name
+    return self.message.topic_name()
+
+  def get_message_sequence_id(self):
+    if not self.get_message_id():
+      return None
+    ledger_id = self.get_message_id().ledger_id()
+    entry_id = self.get_message_id().entry_id()
+    offset = (ledger_id << 28) | entry_id
+    return offset
+
+  def get_message_partition_index(self):
+    if not self.get_message_id():
+      return None
+    return self.get_message_id().partition()
+
+  def get_partition_key(self):
+    return self.message.partition_key()
 
   def get_function_name(self):
     return self.instance_config.function_details.name
@@ -133,11 +147,14 @@ class ContextImpl(pulsar.Context):
 
     self.user_metrics_map[metric_name].observe(metric_value)
 
+  def get_input_topics(self):
+    return list(self.instance_config.function_details.source.inputSpecs.keys())
+
   def get_output_topic(self):
-    return self.instance_config.function_details.output
+    return self.instance_config.function_details.sink.topic
 
   def get_output_serde_class_name(self):
-    return self.instance_config.function_details.outputSerdeClassName
+    return self.instance_config.function_details.sink.serDeClassName
 
   def callback_wrapper(self, callback, topic, message_id, result, msg):
     if result != pulsar.Result.Ok:
@@ -147,7 +164,7 @@ class ContextImpl(pulsar.Context):
     if callback:
       callback(result, msg)
 
-  def publish(self, topic_name, message, serde_class_name="serde.IdentitySerDe", properties=None, compression_type=None, callback=None):
+  def publish(self, topic_name, message, serde_class_name="serde.IdentitySerDe", properties=None, compression_type=None, callback=None, message_conf=None):
     # Just make sure that user supplied values are properly typed
     topic_name = str(topic_name)
     serde_class_name = str(serde_class_name)
@@ -173,12 +190,34 @@ class ContextImpl(pulsar.Context):
       self.publish_serializers[serde_class_name] = serde_klass()
 
     output_bytes = bytes(self.publish_serializers[serde_class_name].serialize(message))
-    self.publish_producers[topic_name].send_async(output_bytes, partial(self.callback_wrapper, callback, topic_name, self.get_message_id()), properties=properties)
+
+    if properties:
+      # The deprecated properties args was passed. Need to merge into message_conf
+      if not message_conf:
+        message_conf = {}
+      message_conf['properties'] = properties
+
+    if message_conf:
+      self.publish_producers[topic_name].send_async(
+        output_bytes, partial(self.callback_wrapper, callback, topic_name, self.get_message_id()), **message_conf)
+    else:
+      self.publish_producers[topic_name].send_async(
+        output_bytes, partial(self.callback_wrapper, callback, topic_name, self.get_message_id()))
 
   def ack(self, msgid, topic):
-    if topic not in self.consumers:
-      raise ValueError('Invalid topicname %s' % topic)
-    self.consumers[topic].acknowledge(msgid)
+    topic_consumer = None
+    if topic in self.consumers:
+      topic_consumer = self.consumers[topic]
+    else:
+      # if this topic is a partitioned topic
+      m = re.search('(.+)-partition-(\d+)', topic)
+      if not m:
+        raise ValueError('Invalid topicname %s' % topic)
+      elif m.group(1) in self.consumers:
+        topic_consumer = self.consumers[m.group(1)]
+      else:
+        raise ValueError('Invalid topicname %s' % topic)
+    topic_consumer.acknowledge(msgid)
 
   def get_and_reset_metrics(self):
     metrics = self.get_metrics()
@@ -206,8 +245,14 @@ class ContextImpl(pulsar.Context):
   def get_counter(self, key):
     return self.state_context.get_amount(key)
 
+  def del_counter(self, key):
+    return self.state_context.delete_key(key)
+
   def put_state(self, key, value):
     return self.state_context.put(key, value)
 
   def get_state(self, key):
     return self.state_context.get_value(key)
+
+  def get_pulsar_client(self):
+    return self.pulsar_client

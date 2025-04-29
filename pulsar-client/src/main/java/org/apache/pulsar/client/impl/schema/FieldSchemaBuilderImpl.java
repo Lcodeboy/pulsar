@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,15 +18,18 @@
  */
 package org.apache.pulsar.client.impl.schema;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
-
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.avro.JsonProperties;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.SchemaBuilder;
 import org.apache.pulsar.client.api.schema.FieldSchemaBuilder;
+import org.apache.pulsar.client.api.schema.GenericSchema;
+import org.apache.pulsar.client.impl.schema.generic.GenericAvroSchema;
 import org.apache.pulsar.common.schema.SchemaType;
 
 /**
@@ -43,8 +46,15 @@ class FieldSchemaBuilderImpl implements FieldSchemaBuilder<FieldSchemaBuilderImp
     private String doc;
     private String[] aliases;
 
+    private GenericSchema genericSchema;
+
     FieldSchemaBuilderImpl(String fieldName) {
+        this(fieldName, null);
+    }
+
+    FieldSchemaBuilderImpl(String fieldName, GenericSchema genericSchema) {
         this.fieldName = fieldName;
+        this.genericSchema = genericSchema;
     }
 
     @Override
@@ -120,6 +130,30 @@ class FieldSchemaBuilderImpl implements FieldSchemaBuilder<FieldSchemaBuilderImp
                 break;
             case BYTES:
                 baseSchema = SchemaBuilder.builder().bytesType();
+                break;
+            // DATE, TIME, TIMESTAMP support from generic record
+            case DATE:
+                baseSchema = LogicalTypes.date().addToSchema(Schema.create(Schema.Type.INT));
+                break;
+            case TIME:
+                baseSchema = LogicalTypes.timeMillis().addToSchema(Schema.create(Schema.Type.INT));
+                break;
+            case TIMESTAMP:
+                baseSchema = LogicalTypes.timestampMillis().addToSchema(Schema.create(Schema.Type.LONG));
+                break;
+            case JSON:
+                checkArgument(genericSchema.getSchemaInfo().getType() == SchemaType.JSON,
+                        "The field is expected to be using JSON schema but "
+                                + genericSchema.getSchemaInfo().getType() + " schema is found");
+                AvroBaseStructSchema genericJsonSchema = (AvroBaseStructSchema) genericSchema;
+                baseSchema = genericJsonSchema.getAvroSchema();
+                break;
+            case AVRO:
+                checkArgument(genericSchema.getSchemaInfo().getType() == SchemaType.AVRO,
+                        "The field is expected to be using AVRO schema but "
+                                + genericSchema.getSchemaInfo().getType() + " schema is found");
+                GenericAvroSchema genericAvroSchema = (GenericAvroSchema) genericSchema;
+                baseSchema = genericAvroSchema.getAvroSchema();
                 break;
             default:
                 throw new RuntimeException("Schema `" + type + "` is not supported to be used as a field for now");

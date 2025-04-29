@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,17 +23,16 @@ import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
-
-import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
-
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-
+import lombok.AllArgsConstructor;
+import org.apache.pulsar.broker.BrokerTestUtil;
 import org.apache.pulsar.broker.service.persistent.PersistentDispatcherSingleActiveConsumer;
 import org.apache.pulsar.broker.service.persistent.PersistentSubscription;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
@@ -42,20 +41,21 @@ import org.apache.pulsar.client.api.ConsumerBuilder;
 import org.apache.pulsar.client.api.ConsumerEventListener;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
+import org.apache.pulsar.client.api.MessageIdAdv;
 import org.apache.pulsar.client.api.MessageRoutingMode;
 import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.SubscriptionType;
-import org.apache.pulsar.client.impl.MessageIdImpl;
-import org.apache.pulsar.client.impl.TopicMessageImpl;
-import org.apache.pulsar.common.api.proto.PulsarApi.CommandSubscribe.SubType;
+import org.apache.pulsar.common.api.proto.CommandSubscribe.SubType;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.util.FutureUtil;
+import org.awaitility.Awaitility;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+@Test(groups = "broker")
 public class PersistentFailoverE2ETest extends BrokerTestBase {
 
     @BeforeClass
@@ -64,7 +64,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         super.baseSetup();
     }
 
-    @AfterClass
+    @AfterClass(alwaysRun = true)
     @Override
     protected void cleanup() throws Exception {
         super.internalCleanup();
@@ -76,6 +76,11 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         final LinkedBlockingQueue<Integer> activeQueue = new LinkedBlockingQueue<>();
         final LinkedBlockingQueue<Integer> inActiveQueue = new LinkedBlockingQueue<>();
+        String name = "";
+
+        public TestConsumerStateEventListener(String name) {
+            this.name = name;
+        }
 
         @Override
         public void becameActive(Consumer<?> consumer, int partitionId) {
@@ -94,7 +99,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         }
     }
 
-    private void verifyConsumerNotReceiveAnyStateChanges(TestConsumerStateEventListener listener) throws Exception {
+    private void verifyConsumerNotReceiveAnyStateChanges(TestConsumerStateEventListener listener) {
         assertNull(listener.activeQueue.poll());
         assertNull(listener.inActiveQueue.poll());
     }
@@ -103,20 +108,23 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         Integer pid = listener.activeQueue.take();
         assertNotNull(pid);
         assertEquals(partitionId, pid.intValue());
-        assertNull(listener.inActiveQueue.poll());
     }
 
     private void verifyConsumerInactive(TestConsumerStateEventListener listener, int partitionId) throws Exception {
         Integer pid = listener.inActiveQueue.take();
         assertNotNull(pid);
         assertEquals(partitionId, pid.intValue());
-        assertNull(listener.activeQueue.poll());
+    }
+
+    private void clearEventQueue(TestConsumerStateEventListener listener) {
+        listener.inActiveQueue.clear();
+        listener.activeQueue.clear();
     }
 
     private static class ActiveInactiveListenerEvent implements ConsumerEventListener {
 
-        private final Set<Integer> activePtns = Sets.newHashSet();
-        private final Set<Integer> inactivePtns = Sets.newHashSet();
+        private final Set<Integer> activePtns = new HashSet<>();
+        private final Set<Integer> inactivePtns = new HashSet<>();
 
         @Override
         public synchronized void becameActive(Consumer<?> consumer, int partitionId) {
@@ -131,26 +139,57 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         }
     }
 
+    @AllArgsConstructor
+    static class FailoverConsumer {
+        private String consumerName;
+        private Consumer<byte[]> consumer;
+        private TestConsumerStateEventListener listener;
+        private PersistentDispatcherSingleActiveConsumer dispatcher;
+        private boolean isActiveConsumer(){
+            return dispatcher.getActiveConsumer().consumerName().equals(consumerName);
+        }
+    }
+
+    FailoverConsumer createConsumer(String topicName, String subName, String listenerName, String consumerName)
+            throws Exception {
+        TestConsumerStateEventListener listener = new TestConsumerStateEventListener(listenerName);
+        Consumer<byte[]> consumer = pulsarClient.newConsumer().topic(topicName).subscriptionName(subName)
+                .acknowledgmentGroupTime(0, TimeUnit.SECONDS)
+                .subscriptionType(SubscriptionType.Failover)
+                .consumerName(consumerName)
+                .consumerEventListener(listener)
+                .subscribe();
+        PersistentDispatcherSingleActiveConsumer dispatcher =
+                (PersistentDispatcherSingleActiveConsumer) pulsar.getBrokerService()
+                .getTopic(topicName, false).get().get()
+                .getSubscription(subName)
+                .getDispatcher();
+        return new FailoverConsumer(consumerName, consumer, listener, dispatcher);
+    }
+
     @Test
     public void testSimpleConsumerEventsWithoutPartition() throws Exception {
-        final String topicName = "persistent://prop/use/ns-abc/failover-topic1";
+        final String topicName = "persistent://prop/use/ns-abc/failover-topic1-" + System.currentTimeMillis();
         final String subName = "sub1";
         final int numMsgs = 100;
 
-        TestConsumerStateEventListener listener1 = new TestConsumerStateEventListener();
-        TestConsumerStateEventListener listener2 = new TestConsumerStateEventListener();
-        ConsumerBuilder<byte[]> consumerBuilder = pulsarClient.newConsumer().topic(topicName).subscriptionName(subName)
-                .acknowledgmentGroupTime(0, TimeUnit.SECONDS).subscriptionType(SubscriptionType.Failover);
+        // 1. Registry two consumers.
+        FailoverConsumer failoverConsumer1 = createConsumer(topicName, subName, "l1", "c1");
+        FailoverConsumer failoverConsumer2 = createConsumer(topicName, subName, "l2", "c2");
+        FailoverConsumer firstConsumer;
+        FailoverConsumer secondConsumer;
+        if (failoverConsumer1.isActiveConsumer()){
+            firstConsumer = failoverConsumer1;
+            secondConsumer = failoverConsumer2;
+        } else {
+            firstConsumer = failoverConsumer2;
+            secondConsumer = failoverConsumer1;
+        }
 
-
-        // 1. two consumers on the same subscription
-        ConsumerBuilder<byte[]> consumerBulder1 = consumerBuilder.clone().consumerName("1")
-                .consumerEventListener(listener1);
-        Consumer<byte[]> consumer1 = consumerBulder1.subscribe();
-        Consumer<byte[]> consumer2 = consumerBuilder.clone().consumerName("2").consumerEventListener(listener2)
-                .subscribe();
-        verifyConsumerActive(listener1, -1);
-        verifyConsumerInactive(listener2, -1);
+        verifyConsumerActive(firstConsumer.listener, -1);
+        verifyConsumerInactive(secondConsumer.listener, -1);
+        clearEventQueue(firstConsumer.listener);
+        clearEventQueue(secondConsumer.listener);
 
         PersistentTopic topicRef = (PersistentTopic) pulsar.getBrokerService().getTopicReference(topicName).get();
         PersistentSubscription subRef = topicRef.getSubscription(subName);
@@ -162,7 +201,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         assertTrue(subRef.getDispatcher().isConsumerConnected());
         assertEquals(subRef.getDispatcher().getType(), SubType.Failover);
 
-        List<CompletableFuture<MessageId>> futures = Lists.newArrayListWithCapacity(numMsgs);
+        List<CompletableFuture<MessageId>> futures = new ArrayList<>(numMsgs);
         Producer<byte[]> producer = pulsarClient.newProducer().topic(topicName)
             .enableBatching(false)
             .messageRoutingMode(MessageRoutingMode.SinglePartition)
@@ -176,24 +215,26 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         rolloverPerIntervalStats();
 
-        assertEquals(subRef.getNumberOfEntriesInBacklog(), numMsgs);
-        Thread.sleep(ASYNC_EVENT_COMPLETION_WAIT);
+        Awaitility.await().untilAsserted(() -> {
+            assertEquals(subRef.getNumberOfEntriesInBacklog(false), numMsgs);
+        });
 
-        // 3. consumer1 should have all the messages while consumer2 should have no messages
+        // 3. firstConsumer should have all the messages while secondConsumer should have no messages
         Message<byte[]> msg = null;
-        Assert.assertNull(consumer2.receive(100, TimeUnit.MILLISECONDS));
+        Assert.assertNull(secondConsumer.consumer.receive(100, TimeUnit.MILLISECONDS));
         for (int i = 0; i < numMsgs; i++) {
-            msg = consumer1.receive(1, TimeUnit.SECONDS);
+            msg = firstConsumer.consumer.receive(1, TimeUnit.SECONDS);
             Assert.assertNotNull(msg);
             Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer1.acknowledge(msg);
+            firstConsumer.consumer.acknowledge(msg);
         }
 
         rolloverPerIntervalStats();
 
         // 4. messages deleted on individual acks
-        Thread.sleep(ASYNC_EVENT_COMPLETION_WAIT);
-        assertEquals(subRef.getNumberOfEntriesInBacklog(), 0);
+        Awaitility.await().untilAsserted(() -> {
+            assertEquals(subRef.getNumberOfEntriesInBacklog(false), 0);
+        });
 
         for (int i = 0; i < numMsgs; i++) {
             String message = "my-message-" + i;
@@ -204,135 +245,84 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         // 5. master consumer failure should resend unacked messages and new messages to another consumer
         for (int i = 0; i < 5; i++) {
-            msg = consumer1.receive(1, TimeUnit.SECONDS);
+            msg = firstConsumer.consumer.receive(1, TimeUnit.SECONDS);
             Assert.assertNotNull(msg);
             Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer1.acknowledge(msg);
+            firstConsumer.consumer.acknowledge(msg);
         }
         for (int i = 5; i < 10; i++) {
-            msg = consumer1.receive(1, TimeUnit.SECONDS);
+            msg = firstConsumer.consumer.receive(1, TimeUnit.SECONDS);
             Assert.assertNotNull(msg);
             Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
             // do not ack
         }
-        consumer1.close();
-        Thread.sleep(CONSUMER_ADD_OR_REMOVE_WAIT_TIME);
+        firstConsumer.consumer.close();
 
-        verifyConsumerActive(listener2, -1);
-        verifyConsumerNotReceiveAnyStateChanges(listener1);
+        Awaitility.await().untilAsserted(() -> {
+            verifyConsumerActive(secondConsumer.listener, -1);
+            verifyConsumerNotReceiveAnyStateChanges(firstConsumer.listener);
+            clearEventQueue(firstConsumer.listener);
+            clearEventQueue(secondConsumer.listener);
+        });
+
         for (int i = 5; i < numMsgs; i++) {
-            msg = consumer2.receive(1, TimeUnit.SECONDS);
+            msg = secondConsumer.consumer.receive(1, TimeUnit.SECONDS);
             Assert.assertNotNull(msg);
             Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer2.acknowledge(msg);
+            secondConsumer.consumer.acknowledge(msg);
         }
-        Assert.assertNull(consumer2.receive(100, TimeUnit.MILLISECONDS));
+        Assert.assertNull(secondConsumer.consumer.receive(100, TimeUnit.MILLISECONDS));
 
         rolloverPerIntervalStats();
-        Thread.sleep(ASYNC_EVENT_COMPLETION_WAIT);
-        assertEquals(subRef.getNumberOfEntriesInBacklog(), 0);
-
-        for (int i = 0; i < numMsgs; i++) {
-            String message = "my-message-" + i;
-            futures.add(producer.sendAsync(message.getBytes()));
-        }
-        FutureUtil.waitForAll(futures).get();
-        futures.clear();
-
-        // 6. consumer subscription should send messages to the new consumer if its name is highest in the list
-        for (int i = 0; i < 5; i++) {
-            msg = consumer2.receive(1, TimeUnit.SECONDS);
-            Assert.assertNotNull(msg);
-            Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer2.acknowledge(msg);
-        }
-        consumer1 = consumerBulder1.subscribe();
-        Thread.sleep(CONSUMER_ADD_OR_REMOVE_WAIT_TIME);
-        for (int i = 5; i < numMsgs; i++) {
-            msg = consumer1.receive(1, TimeUnit.SECONDS);
-            Assert.assertNotNull(msg);
-            Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer1.acknowledge(msg);
-        }
-        Assert.assertNull(consumer1.receive(100, TimeUnit.MILLISECONDS));
-
-        rolloverPerIntervalStats();
-        Thread.sleep(ASYNC_EVENT_COMPLETION_WAIT);
-        assertEquals(subRef.getNumberOfEntriesInBacklog(), 0);
-
-        for (int i = 0; i < numMsgs; i++) {
-            String message = "my-message-" + i;
-            futures.add(producer.sendAsync(message.getBytes()));
-        }
-        FutureUtil.waitForAll(futures).get();
-        futures.clear();
-
-        // 7. consumer subscription should not send messages to the new consumer if its name is not highest in the list
-        for (int i = 0; i < 5; i++) {
-            msg = consumer1.receive(1, TimeUnit.SECONDS);
-            Assert.assertNotNull(msg);
-            Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer1.acknowledge(msg);
-        }
-        TestConsumerStateEventListener listener3 = new TestConsumerStateEventListener();
-        Consumer<byte[]> consumer3 = consumerBuilder.clone().consumerName("3").consumerEventListener(listener3)
-                .subscribe();
-        Thread.sleep(CONSUMER_ADD_OR_REMOVE_WAIT_TIME);
-
-        verifyConsumerInactive(listener3, -1);
-
-        Assert.assertNull(consumer3.receive(100, TimeUnit.MILLISECONDS));
-        for (int i = 5; i < numMsgs; i++) {
-            msg = consumer1.receive(1, TimeUnit.SECONDS);
-            Assert.assertNotNull(msg);
-            Assert.assertEquals(new String(msg.getData()), "my-message-" + i);
-            consumer1.acknowledge(msg);
-        }
-
-        rolloverPerIntervalStats();
-        Thread.sleep(ASYNC_EVENT_COMPLETION_WAIT);
-        assertEquals(subRef.getNumberOfEntriesInBacklog(), 0);
+        Awaitility.await().untilAsserted(() -> {
+            assertEquals(subRef.getNumberOfEntriesInBacklog(false), 0);
+        });
 
         // 8. unsubscribe not allowed if multiple consumers connected
         try {
-            consumer1.unsubscribe();
+            firstConsumer.consumer.unsubscribe();
             fail("should fail");
         } catch (PulsarClientException e) {
             // ok
         }
 
-        // 9. unsubscribe allowed if there is a lone consumer
-        consumer1.close();
-        consumer2.close();
+        // 9. unsubscribe allowed if there is alone consumer
+        firstConsumer.consumer.close();
         Thread.sleep(CONSUMER_ADD_OR_REMOVE_WAIT_TIME);
         try {
-            consumer3.unsubscribe();
+            secondConsumer.consumer.unsubscribe();
         } catch (PulsarClientException e) {
             fail("Should not fail", e);
         }
 
-        Thread.sleep(ASYNC_EVENT_COMPLETION_WAIT);
-        subRef = topicRef.getSubscription(subName);
-        assertNull(subRef);
+        Awaitility.await().untilAsserted(() -> {
+            assertNull(topicRef.getSubscription(subName));
+        });
 
         producer.close();
-        consumer3.close();
-
+        secondConsumer.consumer.close();
         admin.topics().delete(topicName);
     }
 
     @Test
     public void testSimpleConsumerEventsWithPartition() throws Exception {
+        // Resetting ActiveConsumerFailoverDelayTimeMillis else if testActiveConsumerFailoverWithDelay get executed
+        // first could cause this test to fail.
+        conf.setActiveConsumerFailoverDelayTimeMillis(0);
+        restartBroker();
+
         int numPartitions = 4;
 
-        final String topicName = "persistent://prop/use/ns-abc/failover-topic2";
+        final String topicName = BrokerTestUtil.newUniqueName("persistent://prop/use/ns-abc/testSimpleConsumerEventsWithPartition");
         final TopicName destName = TopicName.get(topicName);
         final String subName = "sub1";
         final int numMsgs = 100;
         Set<String> uniqueMessages = new HashSet<>();
         admin.topics().createPartitionedTopic(topicName, numPartitions);
 
-        ConsumerBuilder<byte[]> consumerBuilder = pulsarClient.newConsumer().topic(topicName).subscriptionName(subName)
+        ConsumerBuilder<byte[]> consumerBuilder = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionName(subName)
                 .subscriptionType(SubscriptionType.Failover);
 
         // 1. two consumers on the same subscription
@@ -340,8 +330,10 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         ActiveInactiveListenerEvent listener2 = new ActiveInactiveListenerEvent();
 
         Consumer<byte[]> consumer1 = consumerBuilder.clone().consumerName("1").consumerEventListener(listener1)
+                .receiverQueueSize(1)
                 .subscribe();
         Consumer<byte[]> consumer2 = consumerBuilder.clone().consumerName("2").consumerEventListener(listener2)
+                .receiverQueueSize(1)
                 .subscribe();
 
         PersistentTopic topicRef;
@@ -358,21 +350,19 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         PersistentDispatcherSingleActiveConsumer disp3 = (PersistentDispatcherSingleActiveConsumer) topicRef
                 .getSubscription(subName).getDispatcher();
 
-        List<CompletableFuture<MessageId>> futures = Lists.newArrayListWithCapacity(numMsgs);
         Producer<byte[]> producer = pulsarClient.newProducer().topic(topicName)
             .enableBatching(false)
             .messageRoutingMode(MessageRoutingMode.RoundRobinPartition).create();
         for (int i = 0; i < numMsgs; i++) {
             String message = "my-message-" + i;
-            futures.add(producer.sendAsync(message.getBytes()));
+            producer.sendAsync(message.getBytes());
         }
-        FutureUtil.waitForAll(futures).get();
-        futures.clear();
+        producer.flush();
 
         // equal distribution between both consumers
         int totalMessages = 0;
         Message<byte[]> msg = null;
-        Set<Integer> receivedPtns = Sets.newHashSet();
+        Set<Integer> receivedPtns = new HashSet<>();
         while (true) {
             msg = consumer1.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
@@ -380,8 +370,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
             }
             totalMessages++;
             consumer1.acknowledge(msg);
-            MessageIdImpl msgId = (MessageIdImpl) (((TopicMessageImpl)msg).getInnerMessageId());
-            receivedPtns.add(msgId.getPartitionIndex());
+            receivedPtns.add(((MessageIdAdv) msg.getMessageId()).getPartitionIndex());
         }
 
         assertTrue(Sets.difference(listener1.activePtns, receivedPtns).isEmpty());
@@ -389,7 +378,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         Assert.assertEquals(totalMessages, numMsgs / 2);
 
-        receivedPtns = Sets.newHashSet();
+        receivedPtns = new HashSet<>();
         while (true) {
             msg = consumer2.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
@@ -397,8 +386,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
             }
             totalMessages++;
             consumer2.acknowledge(msg);
-            MessageIdImpl msgId = (MessageIdImpl) (((TopicMessageImpl)msg).getInnerMessageId());
-            receivedPtns.add(msgId.getPartitionIndex());
+            receivedPtns.add(((MessageIdAdv) msg.getMessageId()).getPartitionIndex());
         }
         assertTrue(Sets.difference(listener1.inactivePtns, receivedPtns).isEmpty());
         assertTrue(Sets.difference(listener2.activePtns, receivedPtns).isEmpty());
@@ -412,10 +400,9 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         for (int i = 0; i < numMsgs; i++) {
             String message = "my-message-" + i;
-            futures.add(producer.sendAsync(message.getBytes()));
+            producer.sendAsync(message.getBytes());
         }
-        FutureUtil.waitForAll(futures).get();
-        futures.clear();
+        producer.flush();
 
         // add a consumer
         for (int i = 0; i < 20; i++) {
@@ -424,38 +411,31 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
             uniqueMessages.add(new String(msg.getData()));
             consumer1.acknowledge(msg);
         }
-        Consumer<byte[]> consumer3 = consumerBuilder.clone().consumerName("3").subscribe();
+        Consumer<byte[]> consumer3 = consumerBuilder.clone().consumerName("3")
+                .receiverQueueSize(1)
+                .subscribe();
         Thread.sleep(CONSUMER_ADD_OR_REMOVE_WAIT_TIME);
-        int consumer1Messages = 0;
         while (true) {
             msg = consumer1.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
-                Assert.assertEquals(consumer1Messages, 55);
                 break;
             }
-            consumer1Messages++;
             uniqueMessages.add(new String(msg.getData()));
             consumer1.acknowledge(msg);
         }
-        int consumer2Messages = 0;
         while (true) {
             msg = consumer2.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
-                Assert.assertEquals(consumer2Messages, 50);
                 break;
             }
-            consumer2Messages++;
             uniqueMessages.add(new String(msg.getData()));
             consumer2.acknowledge(msg);
         }
-        int consumer3Messages = 0;
         while (true) {
             msg = consumer3.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
-                Assert.assertEquals(consumer3Messages, 15, 10);
                 break;
             }
-            consumer3Messages++;
             uniqueMessages.add(new String(msg.getData()));
             consumer3.acknowledge(msg);
         }
@@ -469,10 +449,9 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         for (int i = 0; i < numMsgs; i++) {
             String message = "my-message-" + i;
-            futures.add(producer.sendAsync(message.getBytes()));
+            producer.sendAsync(message.getBytes());
         }
-        FutureUtil.waitForAll(futures).get();
-        futures.clear();
+        producer.flush();
 
         // remove a consumer
         for (int i = 0; i < 10; i++) {
@@ -483,25 +462,19 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         }
         consumer1.close();
         Thread.sleep(CONSUMER_ADD_OR_REMOVE_WAIT_TIME);
-        consumer2Messages = 0;
         while (true) {
             msg = consumer2.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
-                Assert.assertEquals(consumer2Messages, 70, 5);
                 break;
             }
-            consumer2Messages++;
             uniqueMessages.add(new String(msg.getData()));
             consumer2.acknowledge(msg);
         }
-        consumer3Messages = 0;
         while (true) {
             msg = consumer3.receive(1, TimeUnit.SECONDS);
             if (msg == null) {
-                Assert.assertEquals(consumer3Messages, 70, 5);
                 break;
             }
-            consumer3Messages++;
             uniqueMessages.add(new String(msg.getData()));
             consumer3.acknowledge(msg);
         }
@@ -524,7 +497,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         final String topicName = "persistent://prop/use/ns-abc/failover-topic3";
         final String subName = "sub1";
         final int numMsgs = 100;
-        List<Message<byte[]>> receivedMessages = Lists.newArrayList();
+        List<Message<byte[]>> receivedMessages = new ArrayList<>();
 
         ConsumerBuilder<byte[]> consumerBuilder = pulsarClient.newConsumer().topic(topicName).subscriptionName(subName)
                 .subscriptionType(SubscriptionType.Failover).messageListener((consumer, msg) -> {
@@ -551,7 +524,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         PersistentSubscription subRef = topicRef.getSubscription(subName);
 
         // enqueue messages
-        List<CompletableFuture<MessageId>> futures = Lists.newArrayListWithCapacity(numMsgs);
+        List<CompletableFuture<MessageId>> futures = new ArrayList<>(numMsgs);
         Producer<byte[]> producer = pulsarClient.newProducer().topic(topicName)
             .enableBatching(false)
             .messageRoutingMode(MessageRoutingMode.SinglePartition)
@@ -571,7 +544,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         // wait for all messages to be dequeued
         int retry = 20;
         for (int i = 0; i < retry; i++) {
-            if (receivedMessages.size() >= numMsgs && subRef.getNumberOfEntriesInBacklog() == 0) {
+            if (receivedMessages.size() >= numMsgs && subRef.getNumberOfEntriesInBacklog(false) == 0) {
                 break;
             } else if (i != retry - 1) {
                 Thread.sleep(100);
@@ -580,7 +553,7 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
 
         // check if message duplication has occurred
         assertEquals(receivedMessages.size(), numMsgs);
-        assertEquals(subRef.getNumberOfEntriesInBacklog(), 0);
+        assertEquals(subRef.getNumberOfEntriesInBacklog(false), 0);
         for (int i = 0; i < receivedMessages.size(); i++) {
             Assert.assertNotNull(receivedMessages.get(i));
             Assert.assertEquals(new String(receivedMessages.get(i).getData()), "my-message-" + i);
@@ -589,7 +562,5 @@ public class PersistentFailoverE2ETest extends BrokerTestBase {
         subscribeFuture1.get().close();
         subscribeFuture2.get().unsubscribe();
         admin.topics().delete(topicName);
-        resetConfig();
-        restartBroker();
     }
 }

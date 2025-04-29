@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,18 +24,29 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collections;
-
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import lombok.experimental.UtilityClass;
 import lombok.extern.slf4j.Slf4j;
-
+import net.bytebuddy.description.annotation.AnnotationDescription;
+import net.bytebuddy.description.annotation.AnnotationValue;
+import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.method.MethodDescription;
+import net.bytebuddy.description.type.TypeDefinition;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.pulsar.common.io.ConfigFieldDefinition;
 import org.apache.pulsar.common.io.ConnectorDefinition;
 import org.apache.pulsar.common.nar.NarClassLoader;
-import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.functions.utils.Exceptions;
+import org.apache.pulsar.functions.utils.ValidatableFunctionPackage;
+import org.apache.pulsar.functions.utils.functions.FunctionUtils;
+import org.apache.pulsar.io.core.BatchSource;
 import org.apache.pulsar.io.core.Sink;
 import org.apache.pulsar.io.core.Source;
+import org.apache.pulsar.io.core.annotations.FieldDoc;
 
 @UtilityClass
 @Slf4j
@@ -46,11 +57,8 @@ public class ConnectorUtils {
     /**
      * Extract the Pulsar IO Source class from a connector archive.
      */
-    public static String getIOSourceClass(NarClassLoader ncl) throws IOException {
-        String configStr = ncl.getServiceDefinition(PULSAR_IO_SERVICE_NAME);
-
-        ConnectorDefinition conf = ObjectMapperFactory.getThreadLocalYaml().readValue(configStr,
-                ConnectorDefinition.class);
+    public static String getIOSourceClass(NarClassLoader narClassLoader) throws IOException {
+        ConnectorDefinition conf = getConnectorDefinition(narClassLoader);
         if (StringUtils.isEmpty(conf.getSourceClass())) {
             throw new IOException(
                     String.format("The '%s' connector does not provide a source implementation", conf.getName()));
@@ -58,10 +66,10 @@ public class ConnectorUtils {
 
         try {
             // Try to load source class and check it implements Source interface
-            Object instance = ncl.loadClass(conf.getSourceClass()).newInstance();
-            if (!(instance instanceof Source)) {
-                throw new IOException("Class " + conf.getSourceClass() + " does not implement interface "
-                        + Source.class.getName());
+            Class sourceClass = narClassLoader.loadClass(conf.getSourceClass());
+            if (!(Source.class.isAssignableFrom(sourceClass) || BatchSource.class.isAssignableFrom(sourceClass))) {
+                throw new IOException(String.format("Class %s does not implement interface %s or %s",
+                        conf.getSourceClass(), Source.class.getName(), BatchSource.class.getName()));
             }
         } catch (Throwable t) {
             Exceptions.rethrowIOException(t);
@@ -73,21 +81,17 @@ public class ConnectorUtils {
     /**
      * Extract the Pulsar IO Sink class from a connector archive.
      */
-    public static String getIOSinkClass(ClassLoader classLoader) throws IOException {
-        NarClassLoader ncl = (NarClassLoader) classLoader;
-        String configStr = ncl.getServiceDefinition(PULSAR_IO_SERVICE_NAME);
-
-        ConnectorDefinition conf = ObjectMapperFactory.getThreadLocalYaml().readValue(configStr,
-                ConnectorDefinition.class);
+    public static String getIOSinkClass(NarClassLoader narClassLoader) throws IOException {
+        ConnectorDefinition conf = getConnectorDefinition(narClassLoader);
         if (StringUtils.isEmpty(conf.getSinkClass())) {
             throw new IOException(
                     String.format("The '%s' connector does not provide a sink implementation", conf.getName()));
         }
 
         try {
-            // Try to load source class and check it implements Sink interface
-            Object instance = ncl.loadClass(conf.getSinkClass()).newInstance();
-            if (!(instance instanceof Sink)) {
+            // Try to load sink class and check it implements Sink interface
+            Class sinkClass = narClassLoader.loadClass(conf.getSinkClass());
+            if (!(Sink.class.isAssignableFrom(sinkClass))) {
                 throw new IOException(
                         "Class " + conf.getSinkClass() + " does not implement interface " + Sink.class.getName());
             }
@@ -98,19 +102,64 @@ public class ConnectorUtils {
         return conf.getSinkClass();
     }
 
-    public static ConnectorDefinition getConnectorDefinition(String narPath) throws IOException {
-        try (NarClassLoader ncl = NarClassLoader.getFromArchive(new File(narPath), Collections.emptySet())) {
-            String configStr = ncl.getServiceDefinition(PULSAR_IO_SERVICE_NAME);
-
-            return ObjectMapperFactory.getThreadLocalYaml().readValue(configStr, ConnectorDefinition.class);
-        }
+    public static ConnectorDefinition getConnectorDefinition(File narFile) throws IOException {
+        return FunctionUtils.getPulsarIOServiceConfig(narFile, ConnectorDefinition.class);
     }
 
-    public static Connectors searchForConnectors(String connectorsDirectory) throws IOException {
-        Path path = Paths.get(connectorsDirectory).toAbsolutePath();
+    public static ConnectorDefinition getConnectorDefinition(NarClassLoader narClassLoader) throws IOException {
+        return FunctionUtils.getPulsarIOServiceConfig(narClassLoader, ConnectorDefinition.class);
+    }
+
+    public static List<ConfigFieldDefinition> getConnectorConfigDefinition(
+            ValidatableFunctionPackage connectorFunctionPackage,
+            String configClassName) {
+        List<ConfigFieldDefinition> retval = new LinkedList<>();
+        TypeDefinition configClass = connectorFunctionPackage.resolveType(configClassName);
+
+        for (FieldDescription field : getAllFields(configClass)) {
+            if (field.isStatic()) {
+                // We don't want static fields
+                continue;
+            }
+            ConfigFieldDefinition configFieldDefinition = new ConfigFieldDefinition();
+            configFieldDefinition.setFieldName(field.getName());
+            configFieldDefinition.setTypeName(field.getType().getActualName());
+            Map<String, String> attributes = new HashMap<>();
+            for (AnnotationDescription annotation : field.getDeclaredAnnotations()) {
+                if (annotation.getAnnotationType().represents(FieldDoc.class)) {
+                    for (MethodDescription.InDefinedShape method : annotation.getAnnotationType()
+                            .getDeclaredMethods()) {
+                        AnnotationValue<?, ?> value = annotation.getValue(method.getName());
+                        attributes.put(method.getName(),
+                                value == null || value.resolve() == null ? "" : value.resolve().toString());
+                    }
+                }
+            }
+            configFieldDefinition.setAttributes(attributes);
+            retval.add(configFieldDefinition);
+        }
+
+        return retval;
+    }
+
+    private static List<FieldDescription> getAllFields(TypeDefinition type) {
+        List<FieldDescription> fields = new LinkedList<>();
+        fields.addAll(type.getDeclaredFields());
+
+        if (type.getSuperClass() != null) {
+            fields.addAll(getAllFields(type.getSuperClass()));
+        }
+
+        return fields;
+    }
+
+    public static TreeMap<String, Connector> searchForConnectors(String connectorsDirectory,
+                                                                 String narExtractionDirectory,
+                                                                 boolean enableClassloading) throws IOException {
+        Path path = Paths.get(connectorsDirectory).toAbsolutePath().normalize();
         log.info("Searching for connectors in {}", path);
 
-        Connectors connectors = new Connectors();
+        TreeMap<String, Connector> connectors = new TreeMap<>();
 
         if (!path.toFile().exists()) {
             log.warn("Connectors archive directory not found");
@@ -120,27 +169,15 @@ public class ConnectorUtils {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(path, "*.nar")) {
             for (Path archive : stream) {
                 try {
-                    ConnectorDefinition cntDef = ConnectorUtils.getConnectorDefinition(archive.toString());
+                    ConnectorDefinition cntDef = ConnectorUtils.getConnectorDefinition(archive.toFile());
                     log.info("Found connector {} from {}", cntDef, archive);
-
-                    if (!StringUtils.isEmpty(cntDef.getSourceClass())) {
-                        connectors.sources.put(cntDef.getName(), archive);
-                    }
-
-                    if (!StringUtils.isEmpty(cntDef.getSinkClass())) {
-                        connectors.sinks.put(cntDef.getName(), archive);
-                    }
-
-                    connectors.connectors.add(cntDef);
+                    Connector connector = new Connector(archive, cntDef, narExtractionDirectory, enableClassloading);
+                    connectors.put(cntDef.getName(), connector);
                 } catch (Throwable t) {
                     log.warn("Failed to load connector from {}", archive, t);
                 }
             }
         }
-
-        Collections.sort(connectors.connectors,
-                (c1, c2) -> String.CASE_INSENSITIVE_ORDER.compare(c1.getName(), c2.getName()));
-
         return connectors;
     }
 }

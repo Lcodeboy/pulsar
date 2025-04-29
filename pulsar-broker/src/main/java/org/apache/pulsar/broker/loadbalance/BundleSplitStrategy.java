@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,8 +18,7 @@
  */
 package org.apache.pulsar.broker.loadbalance;
 
-import java.util.Set;
-
+import java.util.Map;
 import org.apache.pulsar.broker.PulsarService;
 
 /**
@@ -28,13 +27,13 @@ import org.apache.pulsar.broker.PulsarService;
 public interface BundleSplitStrategy {
     /**
      * Determines which bundles, if any, should be split.
-     * 
+     *
      * @param loadData
      *            Load data to base decisions on (does not have benefit of preallocated data since this may not be the
      *            leader broker).
      * @param pulsar
      *            Service to use.
-     * @return A set of the bundles that should be split.
+     * @return A map of the bundles that should be split and the brokers on which they reside.
      */
-    Set<String> findBundlesToSplit(LoadData loadData, PulsarService pulsar);
+    Map<String, String> findBundlesToSplit(LoadData loadData, PulsarService pulsar);
 }

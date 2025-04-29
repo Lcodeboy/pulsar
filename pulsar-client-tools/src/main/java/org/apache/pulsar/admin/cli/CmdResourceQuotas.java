@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,73 +18,74 @@
  */
 package org.apache.pulsar.admin.cli;
 
+import java.util.function.Supplier;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.common.policies.data.ResourceQuota;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
-import com.beust.jcommander.Parameter;
-import com.beust.jcommander.ParameterException;
-import com.beust.jcommander.Parameters;
-
-@Parameters(commandDescription = "Operations about resource quotas")
+@Command(description = "Operations about resource quotas")
 public class CmdResourceQuotas extends CmdBase {
 
-    @Parameters(commandDescription = "Get the resource quota for specified namespace bundle, or default quota if no namespace/bundle specified.")
+    @Command(description = "Get the resource quota for specified namespace bundle, "
+            + "or default quota if no namespace/bundle specified.")
     private class GetResourceQuota extends CliCommand {
 
-        @Parameter(names = { "--namespace",
-                "-n" }, description = "property/cluster/namespace, must be specified together with '--bundle'\n")
-        private java.util.List<String> names;
+        @Option(names = { "--namespace",
+                "-n" }, description = "tenant/namespace, must be specified together with '--bundle'")
+        private String namespaceName;
 
-        @Parameter(names = { "--bundle",
-                "-b" }, description = "{start-boundary}_{end-boundary}, must be specified together with '--namespace'\n")
+        @Option(names = { "--bundle",
+                "-b" }, description = "{start-boundary}_{end-boundary}, must be specified together with '--namespace'")
         private String bundle;
 
         @Override
         void run() throws PulsarAdminException, ParameterException {
-            if (bundle == null && names == null) {
-                print(admin.resourceQuotas().getDefaultResourceQuota());
-            } else if (bundle != null && names != null) {
-                String namespace = validateNamespace(names);
-                print(admin.resourceQuotas().getNamespaceBundleResourceQuota(namespace, bundle));
+            if (bundle == null && namespaceName == null) {
+                print(getAdmin().resourceQuotas().getDefaultResourceQuota());
+            } else if (bundle != null && namespaceName != null) {
+                String namespace = validateNamespace(namespaceName);
+                print(getAdmin().resourceQuotas().getNamespaceBundleResourceQuota(namespace, bundle));
             } else {
                 throw new ParameterException("namespace and bundle must be provided together.");
             }
         }
     }
 
-    @Parameters(commandDescription = "Set the resource quota for specified namespace bundle, or default quota if no namespace/bundle specified.")
+    @Command(description = "Set the resource quota for specified namespace bundle, "
+            + "or default quota if no namespace/bundle specified.")
     private class SetResourceQuota extends CliCommand {
 
-        @Parameter(names = { "--namespace",
-                "-n" }, description = "property/cluster/namespace, must be specified together with '--bundle'\n")
-        private java.util.List<String> names;
+        @Option(names = { "--namespace",
+                "-n" }, description = "tenant/namespace, must be specified together with '--bundle'")
+        private String namespaceName;
 
-        @Parameter(names = { "--bundle",
-                "-b" }, description = "{start-boundary}_{end-boundary}, must be specified together with '--namespace'\n")
+        @Option(names = { "--bundle",
+                "-b" }, description = "{start-boundary}_{end-boundary}, must be specified together with '--namespace'")
         private String bundle;
 
-        @Parameter(names = { "--msgRateIn",
-                "-mi" }, description = "expected incoming messages per second\n", required = true)
+        @Option(names = { "--msgRateIn",
+                "-mi" }, description = "expected incoming messages per second", required = true)
         private long msgRateIn = 0;
 
-        @Parameter(names = { "--msgRateOut",
-                "-mo" }, description = "expected outgoing messages per second\n", required = true)
+        @Option(names = { "--msgRateOut",
+                "-mo" }, description = "expected outgoing messages per second", required = true)
         private long msgRateOut = 0;
 
-        @Parameter(names = { "--bandwidthIn",
-                "-bi" }, description = "expected inbound bandwidth (bytes/second)\n", required = true)
+        @Option(names = {"--bandwidthIn",
+                "-bi"}, description = "expected inbound bandwidth (bytes/second)", required = true)
         private long bandwidthIn = 0;
 
-        @Parameter(names = { "--bandwidthOut",
-                "-bo" }, description = "expected outbound bandwidth (bytes/second)\n", required = true)
+        @Option(names = { "--bandwidthOut",
+                "-bo" }, description = "expected outbound bandwidth (bytes/second)", required = true)
         private long bandwidthOut = 0;
 
-        @Parameter(names = { "--memory", "-mem" }, description = "expected memory usage (Mbytes)\n", required = true)
+        @Option(names = { "--memory", "-mem" }, description = "expected memory usage (Mbytes)", required = true)
         private long memory = 0;
 
-        @Parameter(names = { "--dynamic",
-                "-d" }, description = "dynamic (allow to be dynamically re-calculated) or not\n")
+        @Option(names = { "--dynamic",
+                "-d" }, description = "dynamic (allow to be dynamically re-calculated) or not")
         private boolean dynamic = false;
 
         @Override
@@ -97,37 +98,37 @@ public class CmdResourceQuotas extends CmdBase {
             quota.setMemory(memory);
             quota.setDynamic(dynamic);
 
-            if (bundle == null && names == null) {
-                admin.resourceQuotas().setDefaultResourceQuota(quota);
-            } else if (bundle != null && names != null) {
-                String namespace = validateNamespace(names);
-                admin.resourceQuotas().setNamespaceBundleResourceQuota(namespace, bundle, quota);
+            if (bundle == null && namespaceName == null) {
+                getAdmin().resourceQuotas().setDefaultResourceQuota(quota);
+            } else if (bundle != null && namespaceName != null) {
+                String namespace = validateNamespace(namespaceName);
+                getAdmin().resourceQuotas().setNamespaceBundleResourceQuota(namespace, bundle, quota);
             } else {
                 throw new ParameterException("namespace and bundle must be provided together.");
             }
         }
     }
 
-    @Parameters(commandDescription = "Reset the specified namespace bundle's resource quota to default value.")
+    @Command(description = "Reset the specified namespace bundle's resource quota to default value.")
     private class ResetNamespaceBundleResourceQuota extends CliCommand {
 
-        @Parameter(names = { "--namespace", "-n" }, description = "property/cluster/namespace\n", required = true)
-        private java.util.List<String> names;
+        @Option(names = { "--namespace", "-n" }, description = "tenant/namespace", required = true)
+        private String namespaceName;
 
-        @Parameter(names = { "--bundle", "-b" }, description = "{start-boundary}_{end-boundary}\n", required = true)
+        @Option(names = { "--bundle", "-b" }, description = "{start-boundary}_{end-boundary}", required = true)
         private String bundle;
 
         @Override
         void run() throws PulsarAdminException {
-            String namespace = validateNamespace(names);
-            admin.resourceQuotas().resetNamespaceBundleResourceQuota(namespace, bundle);
+            String namespace = validateNamespace(namespaceName);
+            getAdmin().resourceQuotas().resetNamespaceBundleResourceQuota(namespace, bundle);
         }
     }
 
-    public CmdResourceQuotas(PulsarAdmin admin) {
+    public CmdResourceQuotas(Supplier<PulsarAdmin> admin) {
         super("resource-quotas", admin);
-        jcommander.addCommand("get", new GetResourceQuota());
-        jcommander.addCommand("set", new SetResourceQuota());
-        jcommander.addCommand("reset-namespace-bundle-quota", new ResetNamespaceBundleResourceQuota());
+        addCommand("get", new GetResourceQuota());
+        addCommand("set", new SetResourceQuota());
+        addCommand("reset-namespace-bundle-quota", new ResetNamespaceBundleResourceQuota());
     }
 }

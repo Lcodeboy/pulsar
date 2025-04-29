@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,27 +16,44 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.pulsar.functions.utils;
 
-import net.jodah.typetools.TypeResolver;
+import static org.apache.commons.lang3.StringUtils.isEmpty;
+import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
+import net.bytebuddy.description.type.TypeDefinition;
+import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.pool.TypePool;
+import org.apache.pulsar.client.api.CryptoKeyReader;
+import org.apache.pulsar.client.api.MessagePayloadProcessor;
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.common.functions.CryptoConfig;
+import org.apache.pulsar.common.functions.MessagePayloadProcessorConfig;
 import org.apache.pulsar.common.schema.SchemaType;
 import org.apache.pulsar.functions.api.SerDe;
 
-import static org.apache.commons.lang3.StringUtils.isEmpty;
-
+@Slf4j
 public class ValidatorUtils {
     private static final String DEFAULT_SERDE = "org.apache.pulsar.functions.api.utils.DefaultSerDe";
 
-    public static void validateSchema(String schemaType, Class<?> typeArg, ClassLoader clsLoader,
+    public static void validateSchema(String schemaType, TypeDefinition typeArg, TypePool typePool,
                                       boolean input) {
         if (isEmpty(schemaType) || getBuiltinSchemaType(schemaType) != null) {
             // If it's empty, we use the default schema and no need to validate
             // If it's built-in, no need to validate
         } else {
-            Utils.implementsClass(schemaType, Schema.class, clsLoader);
-            validateSchemaType(schemaType, typeArg, clsLoader, input);
+            TypeDescription schemaClass = null;
+            try {
+                schemaClass = typePool.describe(schemaType).resolve();
+            } catch (TypePool.Resolution.NoSuchTypeException e) {
+                throw new IllegalArgumentException(
+                        String.format("The schema class %s does not exist", schemaType));
+            }
+            if (!schemaClass.asErasure().isAssignableTo(Schema.class)) {
+                throw new IllegalArgumentException(
+                        String.format("%s does not implement %s", schemaType, Schema.class.getName()));
+            }
+            validateSchemaType(schemaClass, typeArg, typePool, input);
         }
     }
 
@@ -49,77 +66,129 @@ public class ValidatorUtils {
         }
     }
 
-    public static void validateSerde(String inputSerializer, Class<?> typeArg, ClassLoader clsLoader,
-                                     boolean deser) {
-        if (isEmpty(inputSerializer)) return;
-        if (inputSerializer.equals(DEFAULT_SERDE)) return;
+
+    public static void validateCryptoKeyReader(CryptoConfig conf, TypePool typePool, boolean isProducer) {
+        if (isEmpty(conf.getCryptoKeyReaderClassName())) {
+            return;
+        }
+
+        String cryptoClassName = conf.getCryptoKeyReaderClassName();
+        TypeDescription cryptoClass = null;
         try {
-            Class<?> serdeClass = Utils.loadClass(inputSerializer, clsLoader);
-        } catch (ClassNotFoundException e) {
+            cryptoClass = typePool.describe(cryptoClassName).resolve();
+        } catch (TypePool.Resolution.NoSuchTypeException e) {
+            throw new IllegalArgumentException(
+                    String.format("The crypto key reader class %s does not exist", cryptoClassName));
+        }
+        if (!cryptoClass.asErasure().isAssignableTo(CryptoKeyReader.class)) {
+            throw new IllegalArgumentException(
+                    String.format("%s does not implement %s", cryptoClassName, CryptoKeyReader.class.getName()));
+        }
+
+        boolean hasConstructor = cryptoClass.getDeclaredMethods().stream()
+                .anyMatch(method -> method.isConstructor() && method.getParameters().size() == 1
+                        && method.getParameters().get(0).getType().asErasure().represents(Map.class));
+
+        if (!hasConstructor) {
+            throw new IllegalArgumentException(
+                    String.format("The crypto key reader class %s does not implement the desired constructor.",
+                            conf.getCryptoKeyReaderClassName()));
+        }
+
+        if (isProducer && (conf.getEncryptionKeys() == null || conf.getEncryptionKeys().length == 0)) {
+            throw new IllegalArgumentException("Missing encryption key name for producer crypto key reader");
+        }
+    }
+
+    public static void validateMessagePayloadProcessor(MessagePayloadProcessorConfig conf, TypePool typePool) {
+        if (isEmpty(conf.getClassName())) {
+            return;
+        }
+
+        String payloadProcessorClassName = conf.getClassName();
+        TypeDescription payloadProcessorClass = null;
+        try {
+            payloadProcessorClass = typePool.describe(payloadProcessorClassName).resolve();
+        } catch (TypePool.Resolution.NoSuchTypeException e) {
+            throw new IllegalArgumentException(
+                    String.format("The message payload processor class %s does not exist", payloadProcessorClassName));
+        }
+        if (!payloadProcessorClass.asErasure().isAssignableTo(MessagePayloadProcessor.class)) {
+            throw new IllegalArgumentException(String.format("%s does not implement %s", payloadProcessorClassName,
+                    MessagePayloadProcessor.class.getName()));
+        }
+
+        boolean hasConstructor;
+        if (conf.getConfig() == null || conf.getConfig().isEmpty()) {
+            hasConstructor = payloadProcessorClass.getDeclaredMethods().stream()
+                    .anyMatch(method -> method.isConstructor() && method.getParameters().size() == 0);
+        } else {
+            hasConstructor = payloadProcessorClass.getDeclaredMethods().stream()
+                    .anyMatch(method -> method.isConstructor() && method.getParameters().size() == 1
+                            && method.getParameters().get(0).getType().asErasure().represents(Map.class));
+        }
+
+        if (!hasConstructor) {
+            throw new IllegalArgumentException(
+                    String.format("The message payload processor class %s does not implement the desired constructor.",
+                            conf.getClassName()));
+        }
+    }
+
+    public static void validateSerde(String inputSerializer, TypeDefinition typeArg, TypePool typePool,
+                                     boolean deser) {
+        if (isEmpty(inputSerializer)) {
+            return;
+        }
+        if (inputSerializer.equals(DEFAULT_SERDE)) {
+            return;
+        }
+        TypeDescription serdeClass;
+        try {
+            serdeClass = typePool.describe(inputSerializer).resolve();
+        } catch (TypePool.Resolution.NoSuchTypeException e) {
             throw new IllegalArgumentException(
                     String.format("The input serialization/deserialization class %s does not exist",
                             inputSerializer));
         }
-        Utils.implementsClass(inputSerializer, SerDe.class, clsLoader);
-
-        SerDe serDe = (SerDe) Reflections.createInstance(inputSerializer, clsLoader);
-        if (serDe == null) {
-            throw new IllegalArgumentException(String.format("The SerDe class %s does not exist",
-                    inputSerializer));
-        }
-        Class<?>[] serDeTypes = TypeResolver.resolveRawArguments(SerDe.class, serDe.getClass());
-
-        // type inheritance information seems to be lost in generic type
-        // load the actual type class for verification
-        Class<?> fnInputClass;
-        Class<?> serdeInputClass;
-        try {
-            fnInputClass = Class.forName(typeArg.getName(), true, clsLoader);
-            serdeInputClass = Class.forName(serDeTypes[0].getName(), true, clsLoader);
-        } catch (ClassNotFoundException e) {
-            throw new IllegalArgumentException("Failed to load type class", e);
-        }
+        TypeDescription.Generic serDeTypeArg = serdeClass.getInterfaces().stream()
+                .filter(i -> i.asErasure().isAssignableTo(SerDe.class))
+                .findFirst()
+                .map(i -> i.getTypeArguments().get(0))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        String.format("%s does not implement %s", inputSerializer, SerDe.class.getName())));
 
         if (deser) {
-            if (!fnInputClass.isAssignableFrom(serdeInputClass)) {
-                throw new IllegalArgumentException("Serializer type mismatch " + typeArg + " vs " + serDeTypes[0]);
+            if (!serDeTypeArg.asErasure().isAssignableTo(typeArg.asErasure())) {
+                throw new IllegalArgumentException("Serializer type mismatch " + typeArg.getActualName() + " vs "
+                        + serDeTypeArg.getActualName());
             }
         } else {
-            if (!serdeInputClass.isAssignableFrom(fnInputClass)) {
-                throw new IllegalArgumentException("Serializer type mismatch " + typeArg + " vs " + serDeTypes[0]);
+            if (!serDeTypeArg.asErasure().isAssignableFrom(typeArg.asErasure())) {
+                throw new IllegalArgumentException("Serializer type mismatch " + typeArg.getActualName() + " vs "
+                        + serDeTypeArg.getActualName());
             }
         }
     }
 
-    private static void validateSchemaType(String schemaClassName, Class<?> typeArg, ClassLoader clsLoader,
+    private static void validateSchemaType(TypeDefinition schema, TypeDefinition typeArg, TypePool typePool,
                                            boolean input) {
-        Schema<?> schema = (Schema<?>) Reflections.createInstance(schemaClassName, clsLoader);
-        if (schema == null) {
-            throw new IllegalArgumentException(String.format("The Schema class %s does not exist",
-                    schemaClassName));
-        }
-        Class<?>[] schemaTypes = TypeResolver.resolveRawArguments(Schema.class, schema.getClass());
 
-        // type inheritance information seems to be lost in generic type
-        // load the actual type class for verification
-        Class<?> fnInputClass;
-        Class<?> schemaInputClass;
-        try {
-            fnInputClass = Class.forName(typeArg.getName(), true, clsLoader);
-            schemaInputClass = Class.forName(schemaTypes[0].getName(), true, clsLoader);
-        } catch (ClassNotFoundException e) {
-            throw new IllegalArgumentException("Failed to load type class", e);
-        }
+        TypeDescription.Generic schemaTypeArg = schema.getInterfaces().stream()
+                .filter(i -> i.asErasure().isAssignableTo(Schema.class))
+                .findFirst()
+                .map(i -> i.getTypeArguments().get(0))
+                .orElse(null);
 
         if (input) {
-            if (!fnInputClass.isAssignableFrom(schemaInputClass)) {
+            if (!schemaTypeArg.asErasure().isAssignableTo(typeArg.asErasure())) {
                 throw new IllegalArgumentException(
-                        "Schema type mismatch " + typeArg + " vs " + schemaTypes[0]);
+                        "Schema type mismatch " + typeArg.getActualName() + " vs " + schemaTypeArg.getActualName());
             }
         } else {
-            if (!schemaInputClass.isAssignableFrom(fnInputClass)) {
+            if (!schemaTypeArg.asErasure().isAssignableFrom(typeArg.asErasure())) {
                 throw new IllegalArgumentException(
-                        "Schema type mismatch " + typeArg + " vs " + schemaTypes[0]);
+                        "Schema type mismatch " + typeArg.getActualName() + " vs " + schemaTypeArg.getActualName());
             }
         }
     }

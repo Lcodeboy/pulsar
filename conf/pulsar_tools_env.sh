@@ -42,13 +42,23 @@
 # PULSAR_GLOBAL_ZK_CONF=
 
 # Extra options to be passed to the jvm
-PULSAR_MEM="-Xmx128m -XX:MaxDirectMemorySize=128m"
-
-# Garbage collection options
-PULSAR_GC=" -client "
+# Discard parameter "-Xms" of $PULSAR_MEM, which tends to be the Broker's minimum memory, to avoid using too much
+# memory by tools.
+if [ -n "$PULSAR_MEM" ]; then
+  PULSAR_MEM_ARR=("${PULSAR_MEM}")
+  PULSAR_MEM_REWRITE=""
+  for i in ${PULSAR_MEM_ARR}
+  do
+    if [ "${i:0:4}" != "-Xms" ]; then
+       PULSAR_MEM_REWRITE="$PULSAR_MEM_REWRITE $i";
+    fi
+  done
+  PULSAR_MEM=${PULSAR_MEM_REWRITE}
+fi
+PULSAR_MEM=${PULSAR_MEM:-"-Xmx128m -XX:MaxDirectMemorySize=128m"}
 
 # Extra options to be passed to the jvm
-PULSAR_EXTRA_OPTS="${PULSAR_EXTRA_OPTS} ${PULSAR_MEM} ${PULSAR_GC} -Dio.netty.leakDetectionLevel=disabled"
+PULSAR_EXTRA_OPTS="${PULSAR_MEM} ${PULSAR_GC} ${PULSAR_GC_LOG} -Dio.netty.leakDetectionLevel=disabled ${PULSAR_EXTRA_OPTS}"
 
 # Add extra paths to the bookkeeper classpath
 # PULSAR_EXTRA_CLASSPATH=
@@ -56,5 +66,5 @@ PULSAR_EXTRA_OPTS="${PULSAR_EXTRA_OPTS} ${PULSAR_MEM} ${PULSAR_GC} -Dio.netty.le
 #Folder where the Bookie server PID file should be stored
 #PULSAR_PID_DIR=
 
-#Wait time before forcefully kill the pulser server instance, if the stop is not successful
+#Wait time before forcefully kill the pulsar server instance, if the stop is not successful
 #PULSAR_STOP_TIMEOUT=

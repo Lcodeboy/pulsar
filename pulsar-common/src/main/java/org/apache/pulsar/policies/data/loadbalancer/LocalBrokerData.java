@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,26 +18,33 @@
  */
 package org.apache.pulsar.policies.data.loadbalancer;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
-
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Contains all the data that is maintained locally on each broker.
  */
+@JsonIgnoreProperties(value = {"bundleStats"})
 @JsonDeserialize(as = LocalBrokerData.class)
-public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
+public class LocalBrokerData implements LoadManagerReport {
 
     // URLs to satisfy contract of ServiceLookupData (used by NamespaceService).
     private final String webServiceUrl;
     private final String webServiceUrlTls;
     private final String pulsarServiceUrl;
     private final String pulsarServiceUrlTls;
+    private boolean persistentTopicsEnabled = true;
+    private boolean nonPersistentTopicsEnabled = true;
 
     // Most recently available system resource usage.
     private ResourceUsage cpu;
@@ -59,7 +66,7 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
     // The stats given in the most recent invocation of update.
     private Map<String, NamespaceBundleStats> lastStats;
 
-    private int numTopics;
+    private long numTopics;
     private int numBundles;
     private int numConsumers;
     private int numProducers;
@@ -76,7 +83,16 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
     // The version string that this broker is running, obtained from the Maven build artifact in the POM
     private String brokerVersionString;
     // This place-holder requires to identify correct LoadManagerReport type while deserializing
+    @SuppressWarnings("checkstyle:ConstantName")
     public static final String loadReportType = LocalBrokerData.class.getSimpleName();
+
+    // the external protocol data advertised by protocol handlers.
+    private Map<String, String> protocols;
+    //
+    private Map<String, AdvertisedListener> advertisedListeners;
+
+    private String loadManagerClassName;
+    private long startTimestamp;
 
     // For JSON only.
     public LocalBrokerData() {
@@ -88,12 +104,19 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
      */
     public LocalBrokerData(final String webServiceUrl, final String webServiceUrlTls, final String pulsarServiceUrl,
             final String pulsarServiceUrlTls) {
+        this(webServiceUrl, webServiceUrlTls, pulsarServiceUrl, pulsarServiceUrlTls,
+                Collections.unmodifiableMap(Collections.emptyMap()));
+    }
+
+    public LocalBrokerData(final String webServiceUrl, final String webServiceUrlTls, final String pulsarServiceUrl,
+                           final String pulsarServiceUrlTls, Map<String, AdvertisedListener> advertisedListeners) {
         this.webServiceUrl = webServiceUrl;
         this.webServiceUrlTls = webServiceUrlTls;
         this.pulsarServiceUrl = pulsarServiceUrl;
         this.pulsarServiceUrlTls = pulsarServiceUrlTls;
-        lastStats = new HashMap<>();
+        lastStats = new ConcurrentHashMap<>();
         lastUpdate = System.currentTimeMillis();
+        startTimestamp = System.currentTimeMillis();
         cpu = new ResourceUsage();
         memory = new ResourceUsage();
         directMemory = new ResourceUsage();
@@ -102,6 +125,30 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
         bundles = new HashSet<>();
         lastBundleGains = new HashSet<>();
         lastBundleLosses = new HashSet<>();
+        protocols = new HashMap<>();
+        this.advertisedListeners = Collections.unmodifiableMap(new HashMap<>(advertisedListeners));
+    }
+
+    /**
+     * Since the broker data is also used as a lock for the broker, we need to have a stable comparison
+     * operator that is not affected by the actual load on the broker.
+     */
+    @Override
+    public boolean equals(Object o) {
+        if (o instanceof LocalBrokerData) {
+            LocalBrokerData other = (LocalBrokerData) o;
+            return Objects.equals(webServiceUrl, other.webServiceUrl)
+                    && Objects.equals(webServiceUrlTls, other.webServiceUrlTls)
+                    && Objects.equals(pulsarServiceUrl, other.pulsarServiceUrl)
+                    && Objects.equals(pulsarServiceUrlTls, other.pulsarServiceUrlTls);
+        }
+
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(webServiceUrl, webServiceUrlTls, pulsarServiceUrl, pulsarServiceUrlTls);
     }
 
     /**
@@ -140,11 +187,11 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
     // Update resource usage given each individual usage.
     private void updateSystemResourceUsage(final ResourceUsage cpu, final ResourceUsage memory,
             final ResourceUsage directMemory, final ResourceUsage bandwidthIn, final ResourceUsage bandwidthOut) {
-        this.cpu = new ResourceUsage(cpu);
-        this.memory = new ResourceUsage(memory);
-        this.directMemory = new ResourceUsage(directMemory);
-        this.bandwidthIn = new ResourceUsage(bandwidthIn);
-        this.bandwidthOut = new ResourceUsage(bandwidthOut);
+        this.cpu = cpu;
+        this.memory = memory;
+        this.directMemory = directMemory;
+        this.bandwidthIn = bandwidthIn;
+        this.bandwidthOut = bandwidthOut;
     }
 
     // Aggregate all message, throughput, topic count, bundle count, consumer
@@ -155,7 +202,7 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
         msgRateOut = 0;
         msgThroughputIn = 0;
         msgThroughputOut = 0;
-        int totalNumTopics = 0;
+        long totalNumTopics = 0;
         int totalNumBundles = 0;
         int totalNumConsumers = 0;
         int totalNumProducers = 0;
@@ -194,8 +241,37 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
     }
 
     public double getMaxResourceUsage() {
-        return max(cpu.percentUsage(), memory.percentUsage(), directMemory.percentUsage(), bandwidthIn.percentUsage(),
+        // does not consider memory because it is noisy by gc.
+        return max(cpu.percentUsage(), directMemory.percentUsage(), bandwidthIn.percentUsage(),
                 bandwidthOut.percentUsage()) / 100;
+    }
+
+    public String printResourceUsage() {
+        return String.format(
+                Locale.ENGLISH,
+                "cpu: %.2f%%, memory: %.2f%%, directMemory: %.2f%%, bandwidthIn: %.2f%%, bandwidthOut: %.2f%%",
+                cpu.percentUsage(), memory.percentUsage(), directMemory.percentUsage(), bandwidthIn.percentUsage(),
+                bandwidthOut.percentUsage());
+    }
+
+    public double getMaxResourceUsageWithWeight(final double cpuWeight,
+                                                final double directMemoryWeight, final double bandwidthInWeight,
+                                                final double bandwidthOutWeight) {
+        return max(cpu.percentUsage() * cpuWeight,
+                directMemory.percentUsage() * directMemoryWeight, bandwidthIn.percentUsage() * bandwidthInWeight,
+                bandwidthOut.percentUsage() * bandwidthOutWeight) / 100;
+    }
+
+    public static double max(double... args) {
+        double max = Double.NEGATIVE_INFINITY;
+
+        for (double d : args) {
+            if (d > max) {
+                max = d;
+            }
+        }
+
+        return max;
     }
 
     private static float max(float...args) {
@@ -263,6 +339,11 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
         return lastBundleGains;
     }
 
+    public void cleanDeltas() {
+        lastBundleGains.clear();
+        lastBundleLosses.clear();
+    }
+
     public void setLastBundleGains(Set<String> lastBundleGains) {
         this.lastBundleGains = lastBundleGains;
     }
@@ -301,7 +382,7 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
     }
 
     @Override
-    public int getNumTopics() {
+    public long getNumTopics() {
         return numTopics;
     }
 
@@ -402,8 +483,59 @@ public class LocalBrokerData extends JSONWritable implements LoadManagerReport {
     }
 
     @Override
+    public boolean isPersistentTopicsEnabled() {
+        return persistentTopicsEnabled;
+    }
+
+    public void setPersistentTopicsEnabled(boolean persistentTopicsEnabled) {
+        this.persistentTopicsEnabled = persistentTopicsEnabled;
+    }
+
+    @Override
+    public boolean isNonPersistentTopicsEnabled() {
+        return nonPersistentTopicsEnabled;
+    }
+
+    public void setNonPersistentTopicsEnabled(boolean nonPersistentTopicsEnabled) {
+        this.nonPersistentTopicsEnabled = nonPersistentTopicsEnabled;
+    }
+
+    @Override
     public Map<String, NamespaceBundleStats> getBundleStats() {
         return getLastStats();
     }
 
+    public void setProtocols(Map<String, String> protocols) {
+        this.protocols = protocols;
+    }
+
+    @Override
+    public Map<String, String> getProtocols() {
+        return protocols;
+    }
+
+    @Override
+    public Optional<String> getProtocol(String protocol) {
+        return Optional.ofNullable(protocols.get(protocol));
+    }
+
+    public Map<String, AdvertisedListener> getAdvertisedListeners() {
+        return advertisedListeners;
+    }
+
+    public void setAdvertisedListeners(Map<String, AdvertisedListener> advertisedListeners) {
+        this.advertisedListeners = advertisedListeners;
+    }
+
+    public String getLoadManagerClassName() {
+        return this.loadManagerClassName;
+    }
+
+    public void setLoadManagerClassName(String loadManagerClassName) {
+        this.loadManagerClassName = loadManagerClassName;
+    }
+
+    public long getStartTimestamp() {
+        return this.startTimestamp;
+    }
 }

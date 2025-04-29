@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,9 +18,9 @@
  */
 package org.apache.pulsar.broker.loadbalance.impl;
 
+import com.fasterxml.jackson.databind.ObjectReader;
 import java.util.HashMap;
 import java.util.Map;
-
 import org.apache.pulsar.broker.loadbalance.LoadReport;
 import org.apache.pulsar.broker.loadbalance.ResourceDescription;
 import org.apache.pulsar.broker.loadbalance.ResourceUnit;
@@ -30,8 +30,6 @@ import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class PulsarLoadReportImpl implements LoadReport {
 
@@ -49,28 +47,33 @@ public class PulsarLoadReportImpl implements LoadReport {
         return requestPerServiceUnit;
     }
 
+    private static final ObjectReader LOAD_REPORT_READER = ObjectMapperFactory.getMapper().reader()
+            .forType(org.apache.pulsar.policies.data.loadbalancer.LoadReport.class);
     public static LoadReport parse(String loadReportJson) {
         PulsarLoadReportImpl pulsarLoadReport = new PulsarLoadReportImpl();
-        ObjectMapper mapper = ObjectMapperFactory.create();
         try {
-            org.apache.pulsar.policies.data.loadbalancer.LoadReport report = mapper.readValue(loadReportJson,
-                    org.apache.pulsar.policies.data.loadbalancer.LoadReport.class);
+            org.apache.pulsar.policies.data.loadbalancer.LoadReport report =
+                    LOAD_REPORT_READER.readValue(loadReportJson);
             SystemResourceUsage sru = report.getSystemResourceUsage();
             String resourceUnitName = report.getName();
             pulsarLoadReport.resourceDescription = new PulsarResourceDescription();
-            if (sru.bandwidthIn != null)
+            if (sru.bandwidthIn != null) {
                 pulsarLoadReport.resourceDescription.put("bandwidthIn", sru.bandwidthIn);
-            if (sru.bandwidthOut != null)
+            }
+            if (sru.bandwidthOut != null) {
                 pulsarLoadReport.resourceDescription.put("bandwidthOut", sru.bandwidthOut);
-            if (sru.memory != null)
+            }
+            if (sru.memory != null) {
                 pulsarLoadReport.resourceDescription.put("memory", sru.memory);
-            if (sru.cpu != null)
+            }
+            if (sru.cpu != null) {
                 pulsarLoadReport.resourceDescription.put("cpu", sru.cpu);
+            }
             pulsarLoadReport.resourceUnit = new SimpleResourceUnit(resourceUnitName,
                     pulsarLoadReport.resourceDescription);
 
         } catch (Exception e) {
-            log.warn("Failed Parsing Load Report from JSON string [{}]", e);
+            log.warn("Failed Parsing Load Report from JSON string", e);
         }
         return pulsarLoadReport;
     }

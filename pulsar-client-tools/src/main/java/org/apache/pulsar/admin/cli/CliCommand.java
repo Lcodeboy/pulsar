@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,152 +18,88 @@
  */
 package org.apache.pulsar.admin.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-
+import java.util.TreeSet;
+import java.util.concurrent.Callable;
 import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.impl.MessageIdImpl;
+import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.TopicDomain;
 import org.apache.pulsar.common.naming.TopicName;
-import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.policies.data.AuthAction;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
+import picocli.CommandLine;
+import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Spec;
 
-import com.beust.jcommander.ParameterException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectWriter;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Sets;
+public abstract class CliCommand implements Callable<Integer> {
+    @Spec
+    private CommandSpec commandSpec;
 
-abstract class CliCommand {
-
-    static String[] validatePropertyCluster(List<String> params) {
-        return splitParameter(params, 2);
-    }
-
-    static String validateNamespace(List<String> params) {
-        String namespace = checkArgument(params);
-        return NamespaceName.get(namespace).toString();
-    }
-
-    static String validateTopicName(List<String> params) {
-        String topic = checkArgument(params);
-        return TopicName.get(topic).toString();
-    }
-
-    static String validatePersistentTopic(List<String> params) {
-        String topic = checkArgument(params);
-        TopicName topicName = TopicName.get(topic);
-        if (topicName.getDomain() != TopicDomain.persistent) {
-            throw new ParameterException("Need to provide a persistent topic name");
+    static String[] validatePropertyCluster(String params) {
+        String[] parts = params.split("/");
+        if (parts.length != 2) {
+            throw new IllegalArgumentException("Parameter format is incorrect");
         }
-        return topicName.toString();
-    }
-
-    static String validateNonPersistentTopic(List<String> params) {
-        String topic = checkArgument(params);
-        TopicName topicName = TopicName.get(topic);
-        if (topicName.getDomain() != TopicDomain.non_persistent) {
-            throw new ParameterException("Need to provide a non-persistent topic name");
-        }
-        return topicName.toString();
-    }
-
-    static void validateLatencySampleRate(int sampleRate) {
-        if (sampleRate < 0) {
-            throw new ParameterException(
-                    "Latency sample rate should be positive and non-zero (found " + sampleRate + ")");
-        }
-    }
-
-    static long validateSizeString(String s) {
-        char last = s.charAt(s.length() - 1);
-        String subStr = s.substring(0, s.length() - 1);
-        switch (last) {
-        case 'k':
-        case 'K':
-            return Long.parseLong(subStr) * 1024;
-
-        case 'm':
-        case 'M':
-            return Long.parseLong(subStr) * 1024 * 1024;
-
-        case 'g':
-        case 'G':
-            return Long.parseLong(subStr) * 1024 * 1024 * 1024;
-
-        case 't':
-        case 'T':
-            return Long.parseLong(subStr) * 1024 * 1024 * 1024 * 1024;
-
-        default:
-            return Long.parseLong(s);
-        }
-    }
-
-    static MessageId validateMessageIdString(String resetMessageIdStr) throws PulsarAdminException {
-        String[] messageId = resetMessageIdStr.split(":");
-        try {
-            Preconditions.checkArgument(messageId.length == 2);
-            return new MessageIdImpl(Long.parseLong(messageId[0]), Long.parseLong(messageId[1]), -1);
-        } catch (Exception e) {
-            throw new PulsarAdminException(
-                    "Invalid reset-position (must be in format: ledgerId:entryId) value " + resetMessageIdStr);
-        }
-    }
-
-    static String checkArgument(List<String> arguments) {
-        if (arguments.size() != 1) {
-            throw new ParameterException("Need to provide just 1 parameter");
-        }
-
-        return arguments.get(0);
-    }
-
-    static private String[] splitParameter(List<String> params, int n) {
-        if (params.size() != 1) {
-            throw new ParameterException("Need to provide just 1 parameter");
-        }
-
-        String[] parts = params.get(0).split("/");
-        if (parts.length != n) {
-            throw new ParameterException("Paramter format is incorrect");
-        }
-
         return parts;
     }
 
-    static String getOneArgument(List<String> params) {
-        if (params.size() != 1) {
-            throw new ParameterException("Need to provide just 1 parameter");
-        }
-
-        return params.get(0);
+    static String validateNamespace(String namespace) {
+        return NamespaceName.get(namespace).toString();
     }
 
-    /**
-     *
-     * @param params
-     *            List of positional arguments
-     * @param pos
-     *            Positional arguments start with index as 1
-     * @param maxArguments
-     *            Validate against max arguments
-     * @return
-     */
-    static String getOneArgument(List<String> params, int pos, int maxArguments) {
-        if (params.size() != maxArguments) {
-            throw new ParameterException(String.format("Need to provide %s parameters", maxArguments));
-        }
-
-        return params.get(pos);
+    static String validateTopicName(String topic) {
+        return TopicName.get(topic).toString();
     }
 
-    static Set<AuthAction> getAuthActions(List<String> actions) {
-        Set<AuthAction> res = Sets.newTreeSet();
+    static String validatePersistentTopic(String topic) {
+        TopicName topicName = TopicName.get(topic);
+        if (topicName.getDomain() != TopicDomain.persistent) {
+            throw new IllegalArgumentException("Need to provide a persistent topic name");
+        }
+        return topicName.toString();
+    }
+
+    static String validateNonPersistentTopic(String topic) {
+        TopicName topicName = TopicName.get(topic);
+        if (topicName.getDomain() != TopicDomain.non_persistent) {
+            throw new IllegalArgumentException("Need to provide a non-persistent topic name");
+        }
+        return topicName.toString();
+    }
+
+    static MessageId validateMessageIdString(String resetMessageIdStr) throws PulsarAdminException {
+        return validateMessageIdString(resetMessageIdStr, -1);
+    }
+
+    static MessageId validateMessageIdString(String resetMessageIdStr, int partitionIndex) throws PulsarAdminException {
+        String[] messageId = resetMessageIdStr.split(":");
+        try {
+            com.google.common.base.Preconditions.checkArgument(messageId.length == 2);
+            return new MessageIdImpl(Long.parseLong(messageId[0]), Long.parseLong(messageId[1]), partitionIndex);
+        } catch (Exception e) {
+            throw new PulsarAdminException(
+                    "Invalid message id (must be in format: ledgerId:entryId) value " + resetMessageIdStr);
+        }
+    }
+
+    Set<AuthAction> getAuthActions(List<String> actions) {
+        Set<AuthAction> res = new TreeSet<>();
+        AuthAction authAction;
         for (String action : actions) {
-            res.add(AuthAction.valueOf(action));
+            try {
+                authAction = AuthAction.valueOf(action);
+            } catch (IllegalArgumentException exception) {
+                throw new ParameterException(String.format("Illegal auth action '%s'. Possible values: %s",
+                        action, Arrays.toString(AuthAction.values())));
+            }
+            res.add(authAction);
         }
 
         return res;
@@ -171,28 +107,55 @@ abstract class CliCommand {
 
     <T> void print(List<T> items) {
         for (T item : items) {
-            System.out.println(item);
+            print(item);
         }
     }
 
-    <T> void printList(T item) {
-        try {
-            System.out.println(writer.writeValueAsString(item));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+    <K, V> void print(Map<K, V> items) {
+        for (Map.Entry<K, V> entry : items.entrySet()) {
+            print(entry.getKey() + "    " + entry.getValue());
         }
     }
 
     <T> void print(T item) {
         try {
-            System.out.println(writer.writeValueAsString(item));
+            if (item instanceof String) {
+                commandSpec.commandLine().getOut().println(item);
+            } else {
+                prettyPrint(item);
+            }
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
-    private static ObjectMapper mapper = ObjectMapperFactory.create();
-    private static ObjectWriter writer = mapper.writerWithDefaultPrettyPrinter();
+    <T> void prettyPrint(T item) {
+        try {
+            commandSpec.commandLine().getOut().println(WRITER.writeValueAsString(item));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static final ObjectMapper MAPPER = ObjectMapperFactory.create();
+    private static final ObjectWriter WRITER = MAPPER.writerWithDefaultPrettyPrinter();
+
+    // Picocli entrypoint.
+    @Override
+    public Integer call() throws Exception {
+        run();
+        return 0;
+    }
 
     abstract void run() throws Exception;
+
+    protected class ParameterException extends CommandLine.ParameterException {
+        public ParameterException(String msg) {
+            super(commandSpec.commandLine(), msg);
+        }
+
+        public ParameterException(String msg, Throwable e) {
+            super(commandSpec.commandLine(), msg, e);
+        }
+    }
 }

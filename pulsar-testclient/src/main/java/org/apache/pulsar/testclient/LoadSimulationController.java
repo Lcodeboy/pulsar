@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,8 @@
  */
 package org.apache.pulsar.testclient;
 
+import static org.apache.pulsar.broker.resources.LoadBalanceResources.BUNDLE_DATA_BASE_PATH;
+import static org.apache.pulsar.broker.resources.LoadBalanceResources.RESOURCE_QUOTA_BASE_PATH;
 import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -35,12 +37,11 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-
 import org.apache.bookkeeper.util.ZkUtils;
-import org.apache.pulsar.broker.BundleData;
 import org.apache.pulsar.broker.loadbalance.LoadManager;
 import org.apache.pulsar.common.policies.data.ResourceQuota;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
+import org.apache.pulsar.policies.data.loadbalancer.BundleData;
 import org.apache.pulsar.policies.data.loadbalancer.LoadReport;
 import org.apache.pulsar.policies.data.loadbalancer.NamespaceBundleStats;
 import org.apache.zookeeper.CreateMode;
@@ -51,77 +52,72 @@ import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.ZooKeeper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.beust.jcommander.JCommander;
-import com.beust.jcommander.Parameter;
-import com.beust.jcommander.ParameterException;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
 /**
  * This class provides a shell for the user to dictate how simulation clients should incur load.
  */
-public class LoadSimulationController {
+@Command(name = "simulation-controller",
+        description = "Provides a shell for the user to dictate how simulation clients should "
+        + "incur load.")
+public class LoadSimulationController extends CmdBase{
     private static final Logger log = LoggerFactory.getLogger(LoadSimulationController.class);
-    private final static String QUOTA_ROOT = "/loadbalance/resource-quota/namespace";
-    private final static String BUNDLE_DATA_ROOT = "/loadbalance/bundle-data";
 
     // Input streams for each client to send commands through.
-    private final DataInputStream[] inputStreams;
+    private DataInputStream[] inputStreams;
 
     // Output streams for each client to receive information from.
-    private final DataOutputStream[] outputStreams;
+    private DataOutputStream[] outputStreams;
 
     // client host names.
-    private final String[] clients;
+    private String[] clients;
 
-    // Port clients are listening on.
-    private final int clientPort;
-
-    // The ZooKeeper cluster to run on.
-    private final String cluster;
-
-    private final Random random;
+    private Random random;
 
     private static final ExecutorService threadPool = Executors.newCachedThreadPool();
 
-    // JCommander arguments for starting a controller via main.
-    private static class MainArguments {
-        @Parameter(names = { "--cluster" }, description = "Cluster to test on", required = true)
-        String cluster;
+    // picocli arguments for starting a controller via main.
 
-        @Parameter(names = { "--clients" }, description = "Comma separated list of client hostnames", required = true)
-        String clientHostNames;
+    @Option(names = { "--cluster" }, description = "Cluster to test on", required = true)
+    String cluster;
 
-        @Parameter(names = { "--client-port" }, description = "Port that the clients are listening on", required = true)
-        int clientPort;
-    }
+    @Option(names = { "--clients" }, description = "Comma separated list of client hostnames", required = true)
+    String clientHostNames;
 
-    // JCommander arguments for accepting user input.
+    @Option(names = { "--client-port" }, description = "Port that the clients are listening on", required = true)
+    int clientPort;
+
+
+    // picocli arguments for accepting user input.
     private static class ShellArguments {
-        @Parameter(description = "Command arguments:\n" + "trade tenant namespace topic\n"
+        @Parameters(description = "Command arguments:\n" + "trade tenant namespace topic\n"
                 + "change tenant namespace topic\n" + "stop tenant namespace topic\n"
                 + "trade_group tenant group_name num_namespaces\n" + "change_group tenant group_name\n"
                 + "stop_group tenant group_name\n" + "script script_name\n" + "copy tenant_name source_zk target_zk\n"
-                + "stream source_zk\n" + "simulate zk\n", required = true)
+                + "stream source_zk\n" + "simulate zk\n", arity = "1")
         List<String> commandArguments;
 
-        @Parameter(names = { "--rand-rate" }, description = "Choose message rate uniformly randomly from the next two "
+        @Option(names = { "--rand-rate" }, description = "Choose message rate uniformly randomly from the next two "
                 + "comma separated values (overrides --rate)")
         String rangeString = "";
 
-        @Parameter(names = { "--rate" }, description = "Messages per second")
+        @Option(names = { "--rate" }, description = "Messages per second")
         double rate = 1;
 
-        @Parameter(names = { "--rate-multiplier" }, description = "Multiplier to use for copying or streaming rates")
+        @Option(names = { "--rate-multiplier" }, description = "Multiplier to use for copying or streaming rates")
         double rateMultiplier = 1;
 
-        @Parameter(names = { "--separation" }, description = "Separation time in ms for trade_group actions "
+        @Option(names = { "--separation" }, description = "Separation time in ms for trade_group actions "
                 + "(0 for no separation)")
         int separation = 0;
 
-        @Parameter(names = { "--size" }, description = "Message size in bytes")
+        @Option(names = { "--size" }, description = "Message size in bytes")
         int size = 1024;
 
-        @Parameter(names = { "--topics-per-namespace" }, description = "Number of topics to create per namespace in "
+        @Option(names = { "--topics-per-namespace" }, description = "Number of topics to create per namespace in "
                 + "trade_group (total number of topics is num_namespaces X num_topics)")
         int topicsPerNamespace = 1;
     }
@@ -181,7 +177,7 @@ public class LoadSimulationController {
         public synchronized void process(final WatchedEvent event) {
             try {
                 // Get the load report and put this back as a watch.
-                final LoadReport loadReport = ObjectMapperFactory.getThreadLocal()
+                final LoadReport loadReport = ObjectMapperFactory.getMapper().getObjectMapper()
                         .readValue(zkClient.getData(path, this, null), LoadReport.class);
                 for (final Map.Entry<String, NamespaceBundleStats> entry : loadReport.getBundleStats().entrySet()) {
                     final String bundle = entry.getKey();
@@ -208,26 +204,11 @@ public class LoadSimulationController {
     }
 
     /**
-     * Create a LoadSimulationController with the given JCommander arguments.
+     * Create a LoadSimulationController with the given picocli arguments.
      *
-     * @param arguments
-     *            Arguments to create from.
      */
-    public LoadSimulationController(final MainArguments arguments) throws Exception {
-        random = new Random();
-        clientPort = arguments.clientPort;
-        cluster = arguments.cluster;
-        clients = arguments.clientHostNames.split(",");
-        final Socket[] sockets = new Socket[clients.length];
-        inputStreams = new DataInputStream[clients.length];
-        outputStreams = new DataOutputStream[clients.length];
-        log.info("Found {} clients:", clients.length);
-        for (int i = 0; i < clients.length; ++i) {
-            sockets[i] = new Socket(clients[i], clientPort);
-            inputStreams[i] = new DataInputStream(sockets[i].getInputStream());
-            outputStreams[i] = new DataOutputStream(sockets[i].getOutputStream());
-            log.info("Connected to {}", clients[i]);
-        }
+    public LoadSimulationController() throws Exception {
+        super("simulation-controller");
     }
 
     // Check that the expected number of application arguments matches the
@@ -246,7 +227,7 @@ public class LoadSimulationController {
             final Map<String, ResourceQuota>[] threadLocalMaps) throws Exception {
         final List<String> children = zkClient.getChildren(path, false);
         if (children.isEmpty()) {
-            threadLocalMaps[random.nextInt(clients.length)].put(path, ObjectMapperFactory.getThreadLocal()
+            threadLocalMaps[random.nextInt(clients.length)].put(path, ObjectMapperFactory.getMapper().getObjectMapper()
                     .readValue(zkClient.getData(path, false, null), ResourceQuota.class));
         } else {
             for (final String child : children) {
@@ -314,7 +295,7 @@ public class LoadSimulationController {
         outputStream.writeDouble(arguments.rate);
     }
 
-    // Change producer settings for a given topic and JCommander arguments.
+    // Change producer settings for a given topic and picocli arguments.
     private void change(final ShellArguments arguments, final String topic, final int client) throws Exception {
         outputStreams[client].write(LoadSimulationClient.CHANGE_COMMAND);
         writeProducerOptions(outputStreams[client], arguments, topic);
@@ -356,7 +337,7 @@ public class LoadSimulationController {
         return clientWithTopic;
     }
 
-    // Trade using the arguments parsed via JCommander and the topic name.
+    // Trade using the arguments parsed via picocli and the topic name.
     private synchronized void trade(final ShellArguments arguments, final String topic, final int client)
             throws Exception {
         // Decide which client to send to randomly to preserve statelessness of
@@ -394,7 +375,7 @@ public class LoadSimulationController {
             for (int i = 0; i < clients.length; ++i) {
                 threadLocalMaps[i] = new HashMap<>();
             }
-            getResourceQuotas(QUOTA_ROOT, sourceZKClient, threadLocalMaps);
+            getResourceQuotas(RESOURCE_QUOTA_BASE_PATH, sourceZKClient, threadLocalMaps);
             final List<Future> futures = new ArrayList<>(clients.length);
             int i = 0;
             log.info("Copying...");
@@ -407,7 +388,7 @@ public class LoadSimulationController {
                         // Simulation will send messages in and out at about the same rate, so just make the rate the
                         // average of in and out.
 
-                        final int tenantStart = QUOTA_ROOT.length() + 1;
+                        final int tenantStart = RESOURCE_QUOTA_BASE_PATH.length() + 1;
                         final int clusterStart = bundle.indexOf('/', tenantStart) + 1;
                         final String sourceTenant = bundle.substring(tenantStart, clusterStart - 1);
                         final int namespaceStart = bundle.indexOf('/', clusterStart) + 1;
@@ -420,14 +401,14 @@ public class LoadSimulationController {
                         final String mangledNamespace = String.format("%s-%s", manglePrefix, namespace);
                         final BundleData bundleData = initializeBundleData(quota, arguments);
                         final String oldAPITargetPath = String.format(
-                                "/loadbalance/resource-quota/namespace/%s/%s/%s/0x00000000_0xffffffff", tenantName,
+                                "%s/namespace/%s/%s/%s/0x00000000_0xffffffff", BUNDLE_DATA_BASE_PATH, tenantName,
                                 cluster, mangledNamespace);
                         final String newAPITargetPath = String.format(
-                                "/loadbalance/bundle-data/%s/%s/%s/0x00000000_0xffffffff", tenantName, cluster,
+                                "%s/%s/%s/%s/0x00000000_0xffffffff", BUNDLE_DATA_BASE_PATH, tenantName, cluster,
                                 mangledNamespace);
                         try {
                             ZkUtils.createFullPathOptimistic(targetZKClient, oldAPITargetPath,
-                                    ObjectMapperFactory.getThreadLocal().writeValueAsBytes(quota),
+                                    ObjectMapperFactory.getMapper().writer().writeValueAsBytes(quota),
                                     ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
                         } catch (KeeperException.NodeExistsException e) {
                             // Ignore already created nodes.
@@ -437,7 +418,8 @@ public class LoadSimulationController {
                         // Put the bundle data in the new ZooKeeper.
                         try {
                             ZkUtils.createFullPathOptimistic(targetZKClient, newAPITargetPath,
-                                    bundleData.getJsonBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+                                    ObjectMapperFactory.getMapper().writer().writeValueAsBytes(bundleData),
+                                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
                         } catch (KeeperException.NodeExistsException e) {
                             // Ignore already created nodes.
                         } catch (Exception e) {
@@ -470,7 +452,7 @@ public class LoadSimulationController {
         for (int i = 0; i < clients.length; ++i) {
             threadLocalMaps[i] = new HashMap<>();
         }
-        getResourceQuotas(QUOTA_ROOT, zkClient, threadLocalMaps);
+        getResourceQuotas(RESOURCE_QUOTA_BASE_PATH, zkClient, threadLocalMaps);
         final List<Future> futures = new ArrayList<>(clients.length);
         int i = 0;
         log.info("Simulating...");
@@ -479,18 +461,20 @@ public class LoadSimulationController {
             futures.add(threadPool.submit(() -> {
                 for (final Map.Entry<String, ResourceQuota> entry : bundleToQuota.entrySet()) {
                     final String bundle = entry.getKey();
-                    final String newAPIPath = bundle.replace(QUOTA_ROOT, BUNDLE_DATA_ROOT);
+                    final String newAPIPath = bundle.replace(RESOURCE_QUOTA_BASE_PATH, BUNDLE_DATA_BASE_PATH);
                     final ResourceQuota quota = entry.getValue();
-                    final int tenantStart = QUOTA_ROOT.length() + 1;
+                    final int tenantStart = RESOURCE_QUOTA_BASE_PATH.length() + 1;
                     final String topic = String.format("persistent://%s/t", bundle.substring(tenantStart));
                     final BundleData bundleData = initializeBundleData(quota, arguments);
                     // Put the bundle data in the new ZooKeeper.
                     try {
-                        ZkUtils.createFullPathOptimistic(zkClient, newAPIPath, bundleData.getJsonBytes(),
+                        ZkUtils.createFullPathOptimistic(zkClient, newAPIPath,
+                                ObjectMapperFactory.getMapper().writer().writeValueAsBytes(bundleData),
                                 ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
                     } catch (KeeperException.NodeExistsException e) {
                         try {
-                            zkClient.setData(newAPIPath, bundleData.getJsonBytes(), -1);
+                            zkClient.setData(newAPIPath,
+                                    ObjectMapperFactory.getMapper().writer().writeValueAsBytes(bundleData), -1);
                         } catch (Exception ex) {
                             throw new RuntimeException(ex);
                         }
@@ -539,8 +523,7 @@ public class LoadSimulationController {
             // This controller will now stream rate changes from the given ZK.
             // Users wishing to stop this should Ctrl + C and use another
             // Controller to send new commands.
-            while (true)
-                ;
+            while (true) {}
         }
     }
 
@@ -626,9 +609,9 @@ public class LoadSimulationController {
         // Don't attempt to process blank input.
         if (args.length > 0 && !(args.length == 1 && args[0].isEmpty())) {
             final ShellArguments arguments = new ShellArguments();
-            final JCommander jc = new JCommander(arguments);
+            final CommandLine commander = new CommandLine(arguments);
             try {
-                jc.parse(args);
+                commander.parseArgs(args);
                 final String command = arguments.commandArguments.get(0);
                 switch (command) {
                 case "trade":
@@ -675,14 +658,14 @@ public class LoadSimulationController {
                     break;
                 case "quit":
                 case "exit":
-                    System.exit(0);
+                    PerfClientUtils.exit(0);
                     break;
                 default:
                     log.info("ERROR: Unknown command \"{}\"", command);
                 }
             } catch (ParameterException ex) {
-                ex.printStackTrace();
-                jc.usage();
+                System.out.println(ex.getMessage());
+                commander.usage(commander.getOut());
             } catch (Exception ex) {
                 ex.printStackTrace();
             }
@@ -692,7 +675,7 @@ public class LoadSimulationController {
     /**
      * Create a shell for the user to send commands to clients.
      */
-    public void run() throws Exception {
+    public void start() throws Exception {
         BufferedReader inReader = new BufferedReader(new InputStreamReader(System.in));
         while (true) {
             // Print the very simple prompt.
@@ -705,19 +688,21 @@ public class LoadSimulationController {
     /**
      * Start a controller with command line arguments.
      *
-     * @param args
-     *            Arguments to pass in.
      */
-    public static void main(String[] args) throws Exception {
-        final MainArguments arguments = new MainArguments();
-        final JCommander jc = new JCommander(arguments);
-        try {
-            jc.parse(args);
-        } catch (Exception ex) {
-            jc.usage();
-            ex.printStackTrace();
-            System.exit(1);
+    @Override
+    public void run() throws Exception {
+        random = new Random();
+        clients = this.clientHostNames.split(",");
+        final Socket[] sockets = new Socket[clients.length];
+        inputStreams = new DataInputStream[clients.length];
+        outputStreams = new DataOutputStream[clients.length];
+        log.info("Found {} clients:", clients.length);
+        for (int i = 0; i < clients.length; ++i) {
+            sockets[i] = new Socket(clients[i], clientPort);
+            inputStreams[i] = new DataInputStream(sockets[i].getInputStream());
+            outputStreams[i] = new DataOutputStream(sockets[i].getOutputStream());
+            log.info("Connected to {}", clients[i]);
         }
-        (new LoadSimulationController(arguments)).run();
+        start();
     }
 }

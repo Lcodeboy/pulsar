@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -44,7 +44,7 @@ public class ManagedLedgerMBeanTest extends MockedBookKeeperTestCase {
     public void simple() throws Exception {
         ManagedLedgerFactoryConfig config = new ManagedLedgerFactoryConfig();
         config.setMaxCacheSize(0);
-        ManagedLedgerFactoryImpl factory = new ManagedLedgerFactoryImpl(bkc, zkc, config);
+        ManagedLedgerFactoryImpl factory = new ManagedLedgerFactoryImpl(metadataStore, bkc, config);
         ManagedLedgerImpl ledger = (ManagedLedgerImpl) factory.open("my_test_ledger");
         ManagedCursor cursor = ledger.openCursor("c1");
         ManagedLedgerMBeanImpl mbean = ledger.mbean;
@@ -59,6 +59,10 @@ public class ManagedLedgerMBeanTest extends MockedBookKeeperTestCase {
         mbean.addAddEntryLatencySample(1, TimeUnit.MILLISECONDS);
         mbean.addAddEntryLatencySample(10, TimeUnit.MILLISECONDS);
         mbean.addAddEntryLatencySample(1, TimeUnit.SECONDS);
+        
+        mbean.addLedgerAddEntryLatencySample(1, TimeUnit.MILLISECONDS);
+        mbean.addLedgerAddEntryLatencySample(10, TimeUnit.MILLISECONDS);
+        mbean.addLedgerAddEntryLatencySample(1, TimeUnit.SECONDS);
 
         mbean.addLedgerSwitchLatencySample(1, TimeUnit.MILLISECONDS);
         mbean.addLedgerSwitchLatencySample(10, TimeUnit.MILLISECONDS);
@@ -70,17 +74,22 @@ public class ManagedLedgerMBeanTest extends MockedBookKeeperTestCase {
         }).get();
 
         assertEquals(mbean.getAddEntryBytesRate(), 0.0);
+        assertEquals(mbean.getAddEntryWithReplicasBytesRate(), 0.0);
         assertEquals(mbean.getAddEntryMessagesRate(), 0.0);
         assertEquals(mbean.getAddEntrySucceed(), 0);
+        assertEquals(mbean.getAddEntrySucceedTotal(), 0);
         assertEquals(mbean.getAddEntryErrors(), 0);
         assertEquals(mbean.getReadEntriesBytesRate(), 0.0);
         assertEquals(mbean.getReadEntriesRate(), 0.0);
         assertEquals(mbean.getReadEntriesSucceeded(), 0);
+        assertEquals(mbean.getReadEntriesSucceededTotal(), 0);
         assertEquals(mbean.getReadEntriesErrors(), 0);
         assertEquals(mbean.getMarkDeleteRate(), 0.0);
 
         assertEquals(mbean.getAddEntryLatencyBuckets(), new long[] { 0, 1, 0, 1, 0, 0, 0, 0, 1, 0 });
         assertEquals(mbean.getAddEntryLatencyAverageUsec(), 337_000.0);
+        assertEquals(mbean.getLedgerAddEntryLatencyBuckets(), new long[] { 0, 1, 0, 1, 0, 0, 0, 0, 1, 0 });
+        assertEquals(mbean.getLedgerAddEntryLatencyAverageUsec(), 337_000.0);
         assertEquals(mbean.getEntrySizeBuckets(), new long[] { 0, 0, 0, 0, 0, 0, 0, 0, 0 });
 
         assertEquals(mbean.getLedgerSwitchLatencyBuckets(), new long[] { 0, 1, 0, 1, 0, 0, 0, 0, 1, 0 });
@@ -95,12 +104,15 @@ public class ManagedLedgerMBeanTest extends MockedBookKeeperTestCase {
         }).get();
 
         assertEquals(mbean.getAddEntryBytesRate(), 800.0);
+        assertEquals(mbean.getAddEntryWithReplicasBytesRate(), 1600.0);
         assertEquals(mbean.getAddEntryMessagesRate(), 2.0);
         assertEquals(mbean.getAddEntrySucceed(), 2);
+        assertEquals(mbean.getAddEntrySucceedTotal(), 2);
         assertEquals(mbean.getAddEntryErrors(), 0);
         assertEquals(mbean.getReadEntriesBytesRate(), 0.0);
         assertEquals(mbean.getReadEntriesRate(), 0.0);
         assertEquals(mbean.getReadEntriesSucceeded(), 0);
+        assertEquals(mbean.getReadEntriesSucceededTotal(), 0);
         assertEquals(mbean.getReadEntriesErrors(), 0);
         assertTrue(mbean.getMarkDeleteRate() > 0.0);
 
@@ -126,9 +138,13 @@ public class ManagedLedgerMBeanTest extends MockedBookKeeperTestCase {
         assertEquals(mbean.getReadEntriesBytesRate(), 600.0);
         assertEquals(mbean.getReadEntriesRate(), 1.0);
         assertEquals(mbean.getReadEntriesSucceeded(), 1);
+        assertEquals(mbean.getReadEntriesSucceededTotal(), 1);
         assertEquals(mbean.getReadEntriesErrors(), 0);
         assertEquals(mbean.getNumberOfMessagesInBacklog(), 1);
         assertEquals(mbean.getMarkDeleteRate(), 0.0);
+
+        assertEquals(mbean.getAddEntrySucceed(), 0);
+        assertEquals(mbean.getAddEntrySucceedTotal(), 2);
 
         factory.shutdown();
     }

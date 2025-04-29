@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,6 +20,7 @@ package org.apache.pulsar.broker.service;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
 import java.lang.reflect.Field;
@@ -29,17 +30,24 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
-import org.apache.pulsar.client.api.*;
 import org.apache.pulsar.client.api.Consumer;
+import org.apache.pulsar.client.api.ConsumerBuilder;
+import org.apache.pulsar.client.api.Message;
+import org.apache.pulsar.client.api.MessageId;
+import org.apache.pulsar.client.api.MessageRoutingMode;
 import org.apache.pulsar.client.api.Producer;
+import org.apache.pulsar.client.api.PulsarClient;
+import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.impl.ConsumerBase;
-import org.apache.pulsar.common.policies.data.TenantInfo;
+import org.apache.pulsar.common.policies.data.TenantInfoImpl;
+import org.apache.pulsar.common.util.collections.GrowableArrayBlockingQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
+@Test(groups = "broker")
 public class ResendRequestTest extends BrokerTestBase {
     private static final long testTimeout = 60000; // 1 min
     private static final Logger log = LoggerFactory.getLogger(ResendRequestTest.class);
@@ -50,11 +58,10 @@ public class ResendRequestTest extends BrokerTestBase {
         super.internalSetup();
     }
 
-    @AfterMethod
+    @AfterMethod(alwaysRun = true)
     @Override
     public void cleanup() throws Exception {
         super.internalCleanup();
-        ;
     }
 
     @Test(timeOut = testTimeout)
@@ -65,8 +72,8 @@ public class ResendRequestTest extends BrokerTestBase {
         final String messagePredicate = "my-message-" + key + "-";
         final int totalMessages = 10;
 
-        HashSet<MessageId> messageIdHashSet = new HashSet<MessageId>();
-        HashSet<String> messageDataHashSet = new HashSet<String>();
+        HashSet<MessageId> messageIdHashSet = new HashSet<>();
+        HashSet<String> messageDataHashSet = new HashSet<>();
 
         // 1. producer connect
         Producer<byte[]> producer = pulsarClient.newProducer().topic(topicName)
@@ -140,9 +147,9 @@ public class ResendRequestTest extends BrokerTestBase {
         assertEquals(messageDataHashSet.size(), totalMessages);
         printIncomingMessageQueue(consumer);
 
-        // 9. Calling resend after acking all messages - expectin 0 messages
+        // 9. Calling resend after acking all messages - expecting 0 messages
         consumer.redeliverUnacknowledgedMessages();
-        assertEquals(consumer.receive(2000, TimeUnit.MILLISECONDS), null);
+        assertNull(consumer.receive(2000, TimeUnit.MILLISECONDS));
 
         // 10. Checking message contents
         for (int i = 0; i < totalMessages; i++) {
@@ -420,7 +427,8 @@ public class ResendRequestTest extends BrokerTestBase {
         final String messagePredicate = "my-message-" + key + "-";
         final int totalMessages = 10;
         final int numberOfPartitions = 4;
-        admin.tenants().createTenant("prop", new TenantInfo());
+        TenantInfoImpl tenantInfo = createDefaultTenantInfo();
+        admin.tenants().createTenant("prop", tenantInfo);
         admin.topics().createPartitionedTopic(topicName, numberOfPartitions);
         // Special step to create partitioned topic
 
@@ -475,7 +483,8 @@ public class ResendRequestTest extends BrokerTestBase {
         final String messagePredicate = "my-message-" + key + "-";
         final int totalMessages = 10;
         final int numberOfPartitions = 3;
-        admin.tenants().createTenant("prop", new TenantInfo());
+        TenantInfoImpl tenantInfo = createDefaultTenantInfo();
+        admin.tenants().createTenant("prop", tenantInfo);
         admin.topics().createPartitionedTopic(topicName, numberOfPartitions);
         Random rn = new Random();
         // Special step to create partitioned topic
@@ -575,7 +584,8 @@ public class ResendRequestTest extends BrokerTestBase {
         final String messagePredicate = "my-message-" + key + "-";
         final int totalMessages = 10;
         final int numberOfPartitions = 3;
-        admin.tenants().createTenant("prop", new TenantInfo());
+        TenantInfoImpl tenantInfo = createDefaultTenantInfo();
+        admin.tenants().createTenant("prop", tenantInfo);
         admin.topics().createPartitionedTopic(topicName, numberOfPartitions);
         Random rn = new Random();
         // Special step to create partitioned topic
@@ -649,7 +659,7 @@ public class ResendRequestTest extends BrokerTestBase {
                 messageCount2 += 1;
             }
             message2 = consumer2.receive(500, TimeUnit.MILLISECONDS);
-        } while (message1 != null || message2 != null);
+        } while (message2 != null);
         log.info(key + " messageCount1 = " + messageCount1);
         log.info(key + " messageCount2 = " + messageCount2);
         log.info(key + " ackCount1 = " + ackCount1);
@@ -697,12 +707,19 @@ public class ResendRequestTest extends BrokerTestBase {
                 receivedConsumer1 += 1;
             }
         } while (message1 != null);
+        do {
+            message2 = consumer2.receive(500, TimeUnit.MILLISECONDS);
+            if (message2 != null) {
+                log.info("Consumer 2 Received: " + new String(message2.getData()));
+                receivedConsumer2 += 1;
+            }
+        } while (message2 != null);
         log.info("Consumer 1 receives = " + receivedConsumer1);
         log.info("Consumer 2 receives = " + receivedConsumer2);
         log.info("Total receives = " + (receivedConsumer2 + receivedConsumer1));
         assertEquals(receivedConsumer2 + receivedConsumer1, totalMessages);
         // Consumer 2 is on Stand By
-        assertEquals(receivedConsumer2, 0);
+        assertEquals(receivedConsumer1, 0);
 
         // 5. Consumer 2 asks for a redelivery but the request is ignored
         log.info("Consumer 2 asks for resend");
@@ -711,18 +728,18 @@ public class ResendRequestTest extends BrokerTestBase {
 
         message1 = consumer1.receive(500, TimeUnit.MILLISECONDS);
         message2 = consumer2.receive(500, TimeUnit.MILLISECONDS);
-        assertEquals(message1, null);
-        assertEquals(message2, null);
+        assertNull(message1);
+        assertNotNull(message2);
     }
 
     @SuppressWarnings("unchecked")
     private BlockingQueue<Message<byte[]>> printIncomingMessageQueue(Consumer<byte[]> consumer) throws Exception {
-        BlockingQueue<Message<byte[]>> imq = null;
+        GrowableArrayBlockingQueue<Message<byte[]>> imq = null;
         ConsumerBase<byte[]> c = (ConsumerBase<byte[]>) consumer;
         Field field = ConsumerBase.class.getDeclaredField("incomingMessages");
         field.setAccessible(true);
-        imq = (BlockingQueue<Message<byte[]>>) field.get(c);
-        log.info("Incoming MEssage Queue: {}", imq);
+        imq = (GrowableArrayBlockingQueue<Message<byte[]>>) field.get(c);
+        log.info("Incoming MEssage Queue: {}", imq.toList());
         return imq;
     }
 

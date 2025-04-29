@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -39,13 +39,19 @@ public class Offloaders implements AutoCloseable {
                 return factory.getRight();
             }
         }
-        throw new IOException("No offloader found for driver '" + driverName + "'." +
-            " Please make sure you dropped the offloader nar packages under `${PULSAR_HOME}/offloaders`.");
+        throw new IOException("No offloader found for driver '" + driverName + "'."
+                + " Please make sure you dropped the offloader nar packages under `${PULSAR_HOME}/offloaders`.");
     }
 
     @Override
     public void close() throws Exception {
         offloaders.forEach(offloader -> {
+            try {
+                offloader.getRight().close();
+            } catch (Exception e) {
+                log.warn("Failed to close offloader '{}': {}",
+                        offloader.getRight().getClass(), e.getMessage());
+            }
             try {
                 offloader.getLeft().close();
             } catch (IOException e) {

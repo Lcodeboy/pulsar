@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,73 +20,59 @@ package org.apache.pulsar.broker.loadbalance;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-
-import org.apache.bookkeeper.util.ZkUtils;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.loadbalance.impl.PulsarResourceDescription;
 import org.apache.pulsar.broker.loadbalance.impl.SimpleResourceUnit;
 import org.apache.pulsar.common.naming.ServiceUnitId;
 import org.apache.pulsar.common.stats.Metrics;
-import org.apache.pulsar.common.util.ObjectMapperFactory;
+import org.apache.pulsar.metadata.api.MetadataStoreException;
+import org.apache.pulsar.metadata.api.coordination.LockManager;
 import org.apache.pulsar.policies.data.loadbalancer.LoadManagerReport;
 import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
-import org.apache.pulsar.policies.data.loadbalancer.ServiceLookupData;
-import org.apache.pulsar.zookeeper.ZooKeeperCache.Deserializer;
-import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException.NoNodeException;
-import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.ZooKeeper;
 
+@Slf4j
 public class NoopLoadManager implements LoadManager {
 
-    private String lookupServiceAddress;
+    private PulsarService pulsar;
+    private String brokerId;
     private ResourceUnit localResourceUnit;
-    private ZooKeeper zkClient;
-
-    LocalBrokerData localData;
-
-    private static final Deserializer<LocalBrokerData> loadReportDeserializer = (key, content) -> ObjectMapperFactory
-            .getThreadLocal()
-            .readValue(content, LocalBrokerData.class);
+    private LockManager<LocalBrokerData> lockManager;
+    private Map<String, String> bundleBrokerAffinityMap;
 
     @Override
     public void initialize(PulsarService pulsar) {
-        lookupServiceAddress = pulsar.getAdvertisedAddress() + ":" + pulsar.getConfiguration().getWebServicePort().get();
-        localResourceUnit = new SimpleResourceUnit(String.format("http://%s", lookupServiceAddress),
-                new PulsarResourceDescription());
-        zkClient = pulsar.getZkClient();
-
-        localData = new LocalBrokerData(pulsar.getWebServiceAddress(), pulsar.getWebServiceAddressTls(),
-                pulsar.getBrokerServiceUrl(), pulsar.getBrokerServiceUrlTls());
+        this.pulsar = pulsar;
+        this.lockManager = pulsar.getCoordinationService().getLockManager(LocalBrokerData.class);
+        this.bundleBrokerAffinityMap = new ConcurrentHashMap<>();
     }
 
     @Override
     public void start() throws PulsarServerException {
-        String brokerZnodePath = LoadManager.LOADBALANCE_BROKERS_ROOT + "/" + lookupServiceAddress;
+        brokerId = pulsar.getBrokerId();
+        localResourceUnit = new SimpleResourceUnit(brokerId, new PulsarResourceDescription());
+
+        LocalBrokerData localData = new LocalBrokerData(pulsar.getWebServiceAddress(),
+                pulsar.getWebServiceAddressTls(),
+                pulsar.getBrokerServiceUrl(), pulsar.getBrokerServiceUrlTls(), pulsar.getAdvertisedListeners());
+        localData.setProtocols(pulsar.getProtocolDataToAdvertise());
+        localData.setLoadManagerClassName(this.pulsar.getConfig().getLoadManagerClassName());
+        String brokerReportPath = LoadManager.LOADBALANCE_BROKERS_ROOT + "/" + brokerId;
 
         try {
-            // When running in standalone, this error can happen when killing the "standalone" process
-            // ungracefully since the ZK session will not be closed and it will take some time for ZK server
-            // to prune the expired sessions after startup.
-            // Since there's a single broker instance running, it's safe, in this mode, to remove the old lock
-
-            // Delete and recreate z-node
-            try {
-                if (zkClient.exists(brokerZnodePath, null) != null) {
-                    zkClient.delete(brokerZnodePath, -1);
-                }
-            } catch (NoNodeException nne) {
-                // Ignore if z-node was just expired
-            }
-
-            ZkUtils.createFullPathOptimistic(zkClient, brokerZnodePath, localData.getJsonBytes(),
-                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-
-        } catch (Exception e) {
-            throw new PulsarServerException(e);
+            log.info("Acquiring broker resource lock on {}", brokerReportPath);
+            lockManager.acquireLock(brokerReportPath, localData).join();
+            log.info("Acquired broker resource lock on {}", brokerReportPath);
+        } catch (CompletionException ce) {
+            throw new PulsarServerException(MetadataStoreException.unwrap(ce));
         }
     }
 
@@ -103,11 +89,6 @@ public class NoopLoadManager implements LoadManager {
     @Override
     public LoadManagerReport generateLoadReport() throws Exception {
         return null;
-    }
-
-    @Override
-    public Deserializer<? extends ServiceLookupData> getLoadReportDeserializer() {
-        return loadReportDeserializer;
     }
 
     @Override
@@ -147,12 +128,30 @@ public class NoopLoadManager implements LoadManager {
 
     @Override
     public Set<String> getAvailableBrokers() throws Exception {
-        return Collections.singleton(lookupServiceAddress);
+        return Collections.singleton(brokerId);
+    }
+
+    @Override
+    public CompletableFuture<Set<String>> getAvailableBrokersAsync() {
+        return CompletableFuture.completedFuture(Collections.singleton(brokerId));
     }
 
     @Override
     public void stop() throws PulsarServerException {
-        // do nothing
+        if (lockManager != null) {
+            try {
+                lockManager.close();
+            } catch (Exception e) {
+                throw new PulsarServerException(e);
+            }
+        }
     }
 
+    @Override
+    public String setNamespaceBundleAffinity(String bundle, String broker) {
+        if (StringUtils.isBlank(broker)) {
+            return this.bundleBrokerAffinityMap.remove(bundle);
+        }
+        return this.bundleBrokerAffinityMap.put(bundle, broker);
+    }
 }

@@ -25,14 +25,30 @@
   <parent>
     <groupId>org.apache.pulsar</groupId>
     <artifactId>pulsar</artifactId>
-    <version>2.4.0-SNAPSHOT</version>
-    <relativePath>..</relativePath>
+    <version>4.1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>tiered-storage-parent</artifactId>
   <name>Apache Pulsar :: Tiered Storage :: Parent</name>
 
+  <properties>
+    <pulsar.jclouds.shaded.version>${project.version}</pulsar.jclouds.shaded.version>
+  </properties>
+
   <modules>
     <module>jcloud</module>
+    <module>file-system</module>
   </modules>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-deploy-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

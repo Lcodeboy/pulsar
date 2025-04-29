@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,12 +18,16 @@
  */
 package org.apache.pulsar.client.api.schema;
 
+import org.apache.pulsar.common.classification.InterfaceAudience;
+import org.apache.pulsar.common.classification.InterfaceStability;
 import org.apache.pulsar.common.schema.SchemaInfo;
 import org.apache.pulsar.common.schema.SchemaType;
 
 /**
  * Building the schema for a {@link GenericRecord}.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public interface RecordSchemaBuilder {
 
     /**
@@ -42,6 +46,15 @@ public interface RecordSchemaBuilder {
      * @return field schema builder to build the field.
      */
     FieldSchemaBuilder field(String fieldName);
+
+    /**
+     * Add a field with the given name and genericSchema to the record.
+     *
+     * @param fieldName name of the field
+     * @param genericSchema schema of the field
+     * @return field schema builder to build the field.
+     */
+    FieldSchemaBuilder field(String fieldName, GenericSchema genericSchema);
 
     /**
      * Add doc to the record schema.

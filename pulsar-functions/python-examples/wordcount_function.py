@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -31,4 +30,5 @@ class WordCountFunction(Function):
         words = input.split()
         for word in words:
             context.incr_counter(word, 1)
+            context.get_logger().info("The value is " + str(context.get_counter(word)))
         return input + "!"

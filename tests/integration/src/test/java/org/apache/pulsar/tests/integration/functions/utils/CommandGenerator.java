@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,15 +24,23 @@ import java.util.Map;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.pulsar.client.api.SubscriptionInitialPosition;
+import org.apache.pulsar.common.functions.ConsumerConfig;
+import org.apache.pulsar.common.functions.ProducerConfig;
 import org.apache.pulsar.tests.integration.topologies.PulsarCluster;
 
 @Getter
 @Setter
 @ToString
 public class CommandGenerator {
+    private static final long MB = 1048576L;
+    private static final long JAVA_RUNTIME_RAM_BYTES = 128 * MB;
+
     public enum Runtime {
         JAVA,
         PYTHON,
+        GO,
     };
     private String functionName;
     private String tenant = "public";
@@ -40,7 +48,7 @@ public class CommandGenerator {
     private String functionClassName;
     private String sourceTopic;
     private String sourceTopicPattern;
-    private Map<String, String> customSereSourceTopics;
+    private Map<String, String> customSerDeSourceTopics;
     private String sinkTopic;
     private String logTopic;
     private String outputSerDe;
@@ -48,14 +56,25 @@ public class CommandGenerator {
     private Runtime runtime;
     private Integer parallelism;
     private String adminUrl;
+    private String batchBuilder;
     private Integer windowLengthCount;
     private Long windowLengthDurationMs;
     private Integer slidingIntervalCount;
     private Long slidingIntervalDurationMs;
+    private String customSchemaInputs;
+    private String inputTypeClassName;
+    private String outputTypeClassName;
+    private String schemaType;
+    private SubscriptionInitialPosition subscriptionInitialPosition;
+    private Boolean retainOrdering;
+    private Boolean retainKeyOrdering;
+    private ProducerConfig producerConfig;
+    private ConsumerConfig consumerConfig;
 
     private Map<String, String> userConfig = new HashMap<>();
-    private static final String JAVAJAR = "/pulsar/examples/api-examples.jar";
-    private static final String PYTHONBASE = "/pulsar/examples/python-examples/";
+    public static final String JAVAJAR = "/pulsar/examples/java-test-functions.jar";
+    public static final String PYTHONBASE = "/pulsar/examples/python-examples/";
+    public static final String GOBASE = "/pulsar/examples/go-examples/";
 
     public static CommandGenerator createDefaultGenerator(String sourceTopic, String functionClassName) {
         CommandGenerator generator = new CommandGenerator();
@@ -71,6 +90,72 @@ public class CommandGenerator {
         generator.setFunctionClassName(functionClassName);
         generator.setRuntime(Runtime.JAVA);
         return generator;
+    }
+
+    public String generateLocalRunCommand(String codeFile) {
+        StringBuilder commandBuilder = new StringBuilder(PulsarCluster.ADMIN_SCRIPT);
+        commandBuilder.append(" functions localrun");
+        if (adminUrl != null) {
+            commandBuilder.append(" --broker-service-url " + adminUrl);
+        }
+        if (tenant != null) {
+            commandBuilder.append(" --tenant " + tenant);
+        }
+        if (namespace != null) {
+            commandBuilder.append(" --namespace " + namespace);
+        }
+        if (functionName != null) {
+            commandBuilder.append(" --name " + functionName);
+        }
+        if(runtime != Runtime.GO){
+            commandBuilder.append(" --className " + functionClassName);
+        }
+        if (StringUtils.isNotEmpty(sourceTopic)) {
+            commandBuilder.append(" --inputs " + sourceTopic);
+            if (consumerConfig != null) {
+                Map<String, ConsumerConfig> inputSpecs = new HashMap<>();
+                inputSpecs.put(sourceTopic, consumerConfig);
+                commandBuilder.append(" --input-specs \'" + new Gson().toJson(inputSpecs) + "\'");
+            }
+        }
+        if (sinkTopic != null) {
+            commandBuilder.append(" --output " + sinkTopic);
+        }
+        if (customSchemaInputs != null) {
+            commandBuilder.append(" --custom-schema-inputs \'" + customSchemaInputs + "\'");
+        }
+        if (inputTypeClassName != null) {
+            commandBuilder.append(" --input-type-class-name " + inputTypeClassName);
+        }
+        if (outputTypeClassName != null) {
+            commandBuilder.append(" --output-type-class-name " + outputTypeClassName);
+        }
+        if (schemaType != null) {
+            commandBuilder.append(" --schema-type " + schemaType);
+        }
+        if (subscriptionInitialPosition != null) {
+            commandBuilder.append(" --subs-position " + subscriptionInitialPosition.name());
+        }
+        switch (runtime){
+            case JAVA:
+                commandBuilder.append(" --jar " + JAVAJAR);
+                break;
+            case PYTHON:
+                if (codeFile != null) {
+                    commandBuilder.append(" --py " + PYTHONBASE + codeFile);
+                } else {
+                    commandBuilder.append(" --py " + PYTHONBASE);
+                }
+                break;
+            case GO:
+                if (codeFile != null) {
+                    commandBuilder.append(" --go " + GOBASE + codeFile);
+                } else {
+                    commandBuilder.append(" --go " + GOBASE);
+                }
+                break;
+        }
+        return commandBuilder.toString();
     }
 
     public String generateCreateFunctionCommand() {
@@ -93,9 +178,16 @@ public class CommandGenerator {
         if (functionName != null) {
             commandBuilder.append(" --name " + functionName);
         }
-        commandBuilder.append(" --className " + functionClassName);
-        if (sourceTopic != null) {
+        if (runtime != Runtime.GO){
+            commandBuilder.append(" --className " + functionClassName);
+        }
+        if (StringUtils.isNotEmpty(sourceTopic)) {
             commandBuilder.append(" --inputs " + sourceTopic);
+            if (consumerConfig != null) {
+                Map<String, ConsumerConfig> inputSpecs = new HashMap<>();
+                inputSpecs.put(sourceTopic, consumerConfig);
+                commandBuilder.append(" --input-specs \'" + new Gson().toJson(inputSpecs) + "\'");
+            }
         }
         if (sourceTopicPattern != null) {
             commandBuilder.append(" --topics-pattern " + sourceTopicPattern);
@@ -103,8 +195,11 @@ public class CommandGenerator {
         if (logTopic != null) {
             commandBuilder.append(" --logTopic " + logTopic);
         }
-        if (customSereSourceTopics != null && !customSereSourceTopics.isEmpty()) {
-            commandBuilder.append(" --customSerdeInputs \'" + new Gson().toJson(customSereSourceTopics) + "\'");
+        if (batchBuilder != null) {
+            commandBuilder.append("--batch-builder" + batchBuilder);
+        }
+        if (customSerDeSourceTopics != null && !customSerDeSourceTopics.isEmpty()) {
+            commandBuilder.append(" --customSerdeInputs \'" + new Gson().toJson(customSerDeSourceTopics) + "\'");
         }
         if (sinkTopic != null) {
             commandBuilder.append(" --output " + sinkTopic);
@@ -133,15 +228,50 @@ public class CommandGenerator {
         if (slidingIntervalDurationMs != null)  {
             commandBuilder.append(" --slidingIntervalDurationMs " + slidingIntervalDurationMs);
         }
+        if (customSchemaInputs != null) {
+            commandBuilder.append(" --custom-schema-inputs \'" + customSchemaInputs + "\'");
+        }
+        if (inputTypeClassName != null) {
+            commandBuilder.append(" --input-type-class-name " + inputTypeClassName);
+        }
+        if (outputTypeClassName != null) {
+            commandBuilder.append(" --output-type-class-name " + outputTypeClassName);
+        }
+        if (schemaType != null) {
+            commandBuilder.append(" --schema-type " + schemaType);
+        }
+        if (subscriptionInitialPosition != null) {
+            commandBuilder.append(" --subs-position " + subscriptionInitialPosition.name());
+        }
+        if (retainOrdering != null) {
+            commandBuilder.append(" --retain-ordering ");
+        }
+        if (retainKeyOrdering != null) {
+            commandBuilder.append(" --retain-key-ordering ");
+        }
 
-        if (runtime == Runtime.JAVA) {
-            commandBuilder.append(" --jar " + JAVAJAR);
-        } else {
-            if (codeFile != null) {
-                commandBuilder.append(" --py " + PYTHONBASE + codeFile);
-            } else {
-                commandBuilder.append(" --py " + PYTHONBASE);
-            }
+        switch (runtime){
+            case JAVA:
+                commandBuilder.append(" --jar " + JAVAJAR);
+                commandBuilder.append(" --ram " + JAVA_RUNTIME_RAM_BYTES);
+                break;
+            case PYTHON:
+                if (codeFile != null) {
+                    commandBuilder.append(" --py " + PYTHONBASE + codeFile);
+                } else {
+                    commandBuilder.append(" --py " + PYTHONBASE);
+                }
+                break;
+            case GO:
+                if (codeFile != null) {
+                    commandBuilder.append(" --go " + GOBASE + codeFile);
+                } else {
+                    commandBuilder.append(" --go " + GOBASE);
+                }
+                break;
+        }
+        if (producerConfig != null) {
+            commandBuilder.append(" --producer-config \'" + new Gson().toJson(producerConfig) + "\'");
         }
         return commandBuilder.toString();
     }
@@ -169,12 +299,22 @@ public class CommandGenerator {
         if (functionName != null) {
             commandBuilder.append(" --name " + functionName);
         }
-        commandBuilder.append(" --className " + functionClassName);
-        if (sourceTopic != null) {
-            commandBuilder.append(" --inputs " + sourceTopic);
+        if (functionClassName != null) {
+            commandBuilder.append(" --className " + functionClassName);
         }
-        if (customSereSourceTopics != null && !customSereSourceTopics.isEmpty()) {
-            commandBuilder.append(" --customSerdeInputs \'" + new Gson().toJson(customSereSourceTopics) + "\'");
+        if (StringUtils.isNotEmpty(sourceTopic)) {
+            commandBuilder.append(" --inputs " + sourceTopic);
+            if (consumerConfig != null) {
+                Map<String, ConsumerConfig> inputSpecs = new HashMap<>();
+                inputSpecs.put(sourceTopic, consumerConfig);
+                commandBuilder.append(" --input-specs \'" + new Gson().toJson(inputSpecs) + "\'");
+            }
+        }
+        if (customSerDeSourceTopics != null && !customSerDeSourceTopics.isEmpty()) {
+            commandBuilder.append(" --customSerdeInputs \'" + new Gson().toJson(customSerDeSourceTopics) + "\'");
+        }
+        if (batchBuilder != null) {
+            commandBuilder.append("--batch-builder" + batchBuilder);
         }
         if (sinkTopic != null) {
             commandBuilder.append(" --output " + sinkTopic);
@@ -206,14 +346,42 @@ public class CommandGenerator {
         if (slidingIntervalDurationMs != null)  {
             commandBuilder.append(" --slidingIntervalDurationMs " + slidingIntervalDurationMs);
         }
+        if (customSchemaInputs != null) {
+            commandBuilder.append(" --custom-schema-inputs \'" + customSchemaInputs + "\'");
+        }
+        if (inputTypeClassName != null) {
+            commandBuilder.append(" --input-type-class-name " + inputTypeClassName);
+        }
+        if (outputTypeClassName != null) {
+            commandBuilder.append(" --output-type-class-name " + outputTypeClassName);
+        }
+        if (schemaType != null) {
+            commandBuilder.append(" --schema-type " + schemaType);
+        }
+        if (subscriptionInitialPosition != null) {
+            commandBuilder.append(" --subs-position " + subscriptionInitialPosition.name());
+        }
 
-        if (runtime == Runtime.JAVA) {
-            commandBuilder.append(" --jar " + JAVAJAR);
-        } else {
-            if (codeFile != null) {
-                commandBuilder.append(" --py " + PYTHONBASE + codeFile);
-            } else {
-                commandBuilder.append(" --py " + PYTHONBASE);
+        if (codeFile != null) {
+            switch (runtime) {
+                case JAVA:
+                    commandBuilder.append(" --jar " + JAVAJAR);
+                    commandBuilder.append(" --ram " + JAVA_RUNTIME_RAM_BYTES);
+                    break;
+                case PYTHON:
+                    if (codeFile != null) {
+                        commandBuilder.append(" --py " + PYTHONBASE + codeFile);
+                    } else {
+                        commandBuilder.append(" --py " + PYTHONBASE);
+                    }
+                    break;
+                case GO:
+                    if (codeFile != null) {
+                        commandBuilder.append(" --go " + GOBASE + codeFile);
+                    } else {
+                        commandBuilder.append(" --go " + GOBASE);
+                    }
+                    break;
             }
         }
         return commandBuilder.toString();

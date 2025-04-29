@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,25 +16,21 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.pulsar.io.kafka;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-import lombok.*;
-import lombok.experimental.Accessors;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Map;
+import lombok.Data;
+import lombok.experimental.Accessors;
+import org.apache.pulsar.io.core.SourceContext;
 import org.apache.pulsar.io.core.annotations.FieldDoc;
 
 @Data
-@Setter
-@Getter
-@EqualsAndHashCode
-@ToString
 @Accessors(chain = true)
 public class KafkaSourceConfig implements Serializable {
 
@@ -47,6 +43,43 @@ public class KafkaSourceConfig implements Serializable {
             "A comma-separated list of host and port pairs that are the addresses of "
           + "the Kafka brokers that a Kafka client connects to initially bootstrap itself")
     private String bootstrapServers;
+
+    @FieldDoc(
+            defaultValue = "",
+            help = "Protocol used to communicate with Kafka brokers.")
+    private String securityProtocol;
+
+    @FieldDoc(
+            defaultValue = "",
+            help = "SASL mechanism used for Kafka client connections.")
+    private String saslMechanism;
+
+    @FieldDoc(
+            defaultValue = "",
+            help = "JAAS login context parameters for SASL connections in the format used by JAAS configuration files.")
+    private String saslJaasConfig;
+
+    @FieldDoc(
+            defaultValue = "",
+            help = "The list of protocols enabled for SSL connections.")
+    private String sslEnabledProtocols;
+
+    @FieldDoc(
+            defaultValue = "",
+            help = "The endpoint identification algorithm to validate server hostname using server certificate.")
+    private String sslEndpointIdentificationAlgorithm;
+
+    @FieldDoc(
+            defaultValue = "",
+            help = "The location of the trust store file.")
+    private String sslTruststoreLocation;
+
+    @FieldDoc(
+            defaultValue = "",
+            sensitive = true,
+            help = "The password for the trust store file.")
+    private String sslTruststorePassword;
+
     @FieldDoc(
         required = true,
         defaultValue = "",
@@ -98,19 +131,37 @@ public class KafkaSourceConfig implements Serializable {
                 + "Since the deserializer will be set by a specific implementation of `KafkaAbstractSource`.")
     private String valueDeserializationClass = "org.apache.kafka.common.serialization.ByteArrayDeserializer";
     @FieldDoc(
+            defaultValue = "earliest",
+            help =
+                    "The default offset reset policy.")
+    private String autoOffsetReset = "earliest";
+    @FieldDoc(
         defaultValue = "",
         help =
             "The consumer config properties to be passed to Consumer. Note that other properties specified "
                 + "in the connector config file take precedence over this config.")
     private Map<String, Object> consumerConfigProperties;
+    @FieldDoc(
+        defaultValue = "false",
+        help =
+            "If true the Kafka message headers will be copied into Pulsar message properties. Since Pulsar properties "
+                + "is a Map<String, String>, byte array values in the Kafka headers will be base64 encoded. ")
+    private boolean copyHeadersEnabled = false;
 
     public static KafkaSourceConfig load(String yamlFile) throws IOException {
         ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
         return mapper.readValue(new File(yamlFile), KafkaSourceConfig.class);
     }
 
-    public static KafkaSourceConfig load(Map<String, Object> map) throws IOException {
+    public static KafkaSourceConfig load(Map<String, Object> map, SourceContext sourceContext) throws IOException {
         ObjectMapper mapper = new ObjectMapper();
-        return mapper.readValue(new ObjectMapper().writeValueAsString(map), KafkaSourceConfig.class);
+        // since the KafkaSourceConfig requires the ACCEPT_EMPTY_STRING_AS_NULL_OBJECT feature
+        // We manually set the sensitive fields here instead of calling `IOConfigUtils.loadWithSecrets`
+        String sslTruststorePassword = sourceContext.getSecret("sslTruststorePassword");
+        if (sslTruststorePassword != null) {
+            map.put("sslTruststorePassword", sslTruststorePassword);
+        }
+        mapper.enable(DeserializationFeature.ACCEPT_EMPTY_STRING_AS_NULL_OBJECT);
+        return mapper.readValue(mapper.writeValueAsString(map), KafkaSourceConfig.class);
     }
 }

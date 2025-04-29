@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,18 +18,16 @@
  */
 package org.apache.pulsar.policies.data.loadbalancer;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
-
 import org.apache.pulsar.common.util.NamespaceBundleStatsComparator;
 import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage.ResourceType;
-
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import com.google.common.collect.Maps;
 
 /**
  * This class represents the overall load of the broker - it includes overall {@link SystemResourceUsage} and
@@ -44,19 +42,25 @@ public class LoadReport implements LoadManagerReport {
     private final String webServiceUrlTls;
     private final String pulsarServiceUrl;
     private final String pulsarServiceUrlTls;
+    private boolean persistentTopicsEnabled = true;
+    private boolean nonPersistentTopicsEnabled = true;
 
     private boolean isUnderLoaded;
     private boolean isOverLoaded;
     private long timestamp;
     private double msgRateIn;
     private double msgRateOut;
-    private int numTopics;
+    private long numTopics;
     private int numConsumers;
     private int numProducers;
     private int numBundles;
+    private Map<String, String> protocols;
+    private String loadManagerClassName;
+    private long startTimestamp;
     // This place-holder requires to identify correct LoadManagerReport type while deserializing
+    @SuppressWarnings("checkstyle:ConstantName")
     public static final String loadReportType = LoadReport.class.getSimpleName();
-    
+
     public LoadReport() {
         this(null, null, null, null);
     }
@@ -67,6 +71,7 @@ public class LoadReport implements LoadManagerReport {
         this.webServiceUrlTls = webServiceUrlTls;
         this.pulsarServiceUrl = pulsarServiceUrl;
         this.pulsarServiceUrlTls = pulsarServiceUrlTls;
+        this.protocols = new HashMap<>();
         bundleLosses = new HashSet<>();
         bundleGains = new HashSet<>();
         isUnderLoaded = false;
@@ -81,7 +86,7 @@ public class LoadReport implements LoadManagerReport {
     }
 
     /**
-     * overall machine resource used, not just by broker process
+     * Overall machine resource used, not just by broker process.
      */
     private SystemResourceUsage systemResourceUsage;
 
@@ -200,7 +205,7 @@ public class LoadReport implements LoadManagerReport {
     }
 
     @Override
-    public int getNumTopics() {
+    public long getNumTopics() {
         numTopics = 0;
         if (this.bundleStats != null) {
             this.bundleStats.forEach((bundle, stats) -> {
@@ -257,7 +262,7 @@ public class LoadReport implements LoadManagerReport {
         }
 
         NamespaceBundleStatsComparator nsc = new NamespaceBundleStatsComparator(bundleStats, resType);
-        TreeMap<String, NamespaceBundleStats> sortedBundleStats = Maps.newTreeMap(nsc);
+        TreeMap<String, NamespaceBundleStats> sortedBundleStats = new TreeMap<>(nsc);
         sortedBundleStats.putAll(bundleStats);
         return sortedBundleStats;
     }
@@ -402,6 +407,22 @@ public class LoadReport implements LoadManagerReport {
         return pulsarServiceUrlTls;
     }
 
+    public boolean isPersistentTopicsEnabled() {
+        return persistentTopicsEnabled;
+    }
+
+    public void setPersistentTopicsEnabled(boolean persistentTopicsEnabled) {
+        this.persistentTopicsEnabled = persistentTopicsEnabled;
+    }
+
+    public boolean isNonPersistentTopicsEnabled() {
+        return nonPersistentTopicsEnabled;
+    }
+
+    public void setNonPersistentTopicsEnabled(boolean nonPersistentTopicsEnabled) {
+        this.nonPersistentTopicsEnabled = nonPersistentTopicsEnabled;
+    }
+
     @Override
     public ResourceUsage getCpu() {
         return systemResourceUsage != null ? systemResourceUsage.cpu : null;
@@ -440,5 +461,37 @@ public class LoadReport implements LoadManagerReport {
     @Override
     public double getMsgThroughputOut() {
         return msgRateOut;
+    }
+
+    @Override
+    public Map<String, String> getProtocols() {
+        return protocols;
+    }
+
+    public void setProtocols(Map<String, String> protocols) {
+        this.protocols = protocols;
+    }
+
+    @Override
+    public Optional<String> getProtocol(String protocol) {
+        return Optional.ofNullable(protocols.get(protocol));
+    }
+
+    @Override
+    public String getLoadManagerClassName() {
+        return this.loadManagerClassName;
+    }
+
+    public void setLoadManagerClassName(String loadManagerClassName) {
+        this.loadManagerClassName = loadManagerClassName;
+    }
+
+    @Override
+    public long getStartTimestamp() {
+        return this.startTimestamp;
+    }
+
+    public void setStartTimestamp(long startTimestamp) {
+        this.startTimestamp = startTimestamp;
     }
 }

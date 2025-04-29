@@ -37,6 +37,21 @@ else
     JAVA=$JAVA_HOME/bin/java
 fi
 
+for token in $("$JAVA" -version 2>&1 | grep 'version "'); do
+    if [[ $token =~ \"([[:digit:]]+)\.([[:digit:]]+)(.*)\" ]]; then
+        if [[ ${BASH_REMATCH[1]} == "1" ]]; then
+          JAVA_MAJOR_VERSION=${BASH_REMATCH[2]}
+        else
+          JAVA_MAJOR_VERSION=${BASH_REMATCH[1]}
+        fi
+        break
+    elif [[ $token =~ \"([[:digit:]]+)(.*)\" ]]; then
+        # Process the java versions without dots, such as `17-internal`.
+        JAVA_MAJOR_VERSION=${BASH_REMATCH[1]}
+        break
+    fi
+done
+
 # exclude tests jar
 RELEASE_JAR=`ls $PULSAR_HOME/pulsar-*.jar 2> /dev/null | grep -v tests | tail -1`
 if [ $? == 0 ]; then
@@ -56,16 +71,19 @@ fi
 add_maven_deps_to_classpath() {
     MVN="mvn"
     if [ "$MAVEN_HOME" != "" ]; then
-	MVN=${MAVEN_HOME}/bin/mvn
+      MVN=${MAVEN_HOME}/bin/mvn
     fi
 
     # Need to generate classpath from maven pom. This is costly so generate it
     # and cache it. Save the file into our target dir so a mvn clean will get
     # clean it up and force us create a new one.
-    f="${PULSAR_HOME}/distribution/server/target/classpath.txt"
+    f="${PULSAR_HOME}/distribution/shell/target/classpath.txt"
     if [ ! -f "${f}" ]
     then
-	${MVN} -f "${PULSAR_HOME}/pom.xml" dependency:build-classpath -DincludeScope=compile -Dmdep.outputFile="${f}" &> /dev/null
+    (
+      cd "${PULSAR_HOME}"
+      ${MVN} -pl distribution/shell generate-sources &> /dev/null
+    )
     fi
     PULSAR_CLASSPATH=${CLASSPATH}:`cat "${f}"`
 }
@@ -86,7 +104,23 @@ fi
 PULSAR_CLASSPATH="$PULSAR_JAR:$PULSAR_CLASSPATH:$PULSAR_EXTRA_CLASSPATH"
 PULSAR_CLASSPATH="`dirname $PULSAR_LOG_CONF`:$PULSAR_CLASSPATH"
 OPTS="$OPTS -Dlog4j.configurationFile=`basename $PULSAR_LOG_CONF`"
-OPTS="$OPTS -Djava.net.preferIPv4Stack=true"
+OPTS="-Djava.net.preferIPv4Stack=true $OPTS"
+
+# Allow Netty to use reflection access
+OPTS="$OPTS -Dio.netty.tryReflectionSetAccessible=true"
+OPTS="$OPTS -Dorg.apache.pulsar.shade.io.netty.tryReflectionSetAccessible=true"
+
+if [[ $JAVA_MAJOR_VERSION -gt 8 ]]; then
+  OPTS="$OPTS --add-opens java.base/sun.net=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED"
+  # Required by Pulsar client optimized checksum calculation on other than Linux x86_64 platforms
+  # reflection access to java.util.zip.CRC32C
+  OPTS="$OPTS --add-opens java.base/java.util.zip=ALL-UNNAMED"
+fi
+
+if [[ $JAVA_MAJOR_VERSION -ge 11 ]]; then
+  # Required by Netty for optimized direct byte buffer access
+  OPTS="$OPTS --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/jdk.internal.misc=ALL-UNNAMED"
+fi
 
 OPTS="-cp $PULSAR_CLASSPATH $OPTS"
 
@@ -96,10 +130,14 @@ OPTS="$OPTS $PULSAR_EXTRA_OPTS"
 PULSAR_LOG_DIR=${PULSAR_LOG_DIR:-"$PULSAR_HOME/logs"}
 PULSAR_LOG_APPENDER=${PULSAR_LOG_APPENDER:-"RoutingAppender"}
 PULSAR_LOG_LEVEL=${PULSAR_LOG_LEVEL:-"info"}
+PULSAR_LOG_ROOT_LEVEL=${PULSAR_LOG_ROOT_LEVEL:-"${PULSAR_LOG_LEVEL}"}
 PULSAR_ROUTING_APPENDER_DEFAULT=${PULSAR_ROUTING_APPENDER_DEFAULT:-"Console"}
+PULSAR_LOG_IMMEDIATE_FLUSH="${PULSAR_LOG_IMMEDIATE_FLUSH:-"false"}"
 
 #Configure log configuration system properties
 OPTS="$OPTS -Dpulsar.log.appender=$PULSAR_LOG_APPENDER"
 OPTS="$OPTS -Dpulsar.log.dir=$PULSAR_LOG_DIR"
 OPTS="$OPTS -Dpulsar.log.level=$PULSAR_LOG_LEVEL"
+OPTS="$OPTS -Dpulsar.log.root.level=$PULSAR_LOG_ROOT_LEVEL"
+OPTS="$OPTS -Dpulsar.log.immediateFlush=$PULSAR_LOG_IMMEDIATE_FLUSH"
 OPTS="$OPTS -Dpulsar.routing.appender.default=$PULSAR_ROUTING_APPENDER_DEFAULT"

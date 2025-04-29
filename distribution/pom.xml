@@ -25,17 +25,45 @@
   <parent>
     <groupId>org.apache.pulsar</groupId>
     <artifactId>pulsar</artifactId>
-    <version>2.4.0-SNAPSHOT</version>
-    <relativePath>..</relativePath>
+    <version>4.1.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>distribution</artifactId>
   <packaging>pom</packaging>
   <name>Pulsar :: Distribution</name>
 
-  <modules>
-    <module>server</module>
-    <module>io</module>
-    <module>offloaders</module>
-  </modules>
+  <profiles>
+
+    <profile>
+      <id>main</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <modules>
+        <module>io</module>
+        <module>offloaders</module>
+        <module>server</module>
+        <module>shell</module>
+      </modules>
+    </profile>
+
+    <profile>
+      <id>core-modules</id>
+      <modules>
+        <module>server</module>
+      </modules>
+    </profile>
+  </profiles>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-deploy-plugin</artifactId>
+        <configuration>
+          <skip>${skipBuildDistribution}</skip>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

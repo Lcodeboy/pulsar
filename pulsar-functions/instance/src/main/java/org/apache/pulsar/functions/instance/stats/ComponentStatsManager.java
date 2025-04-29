@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,19 +19,15 @@
 package org.apache.pulsar.functions.instance.stats;
 
 import com.google.common.collect.EvictingQueue;
-import io.prometheus.client.CollectorRegistry;
-import io.prometheus.client.exporter.common.TextFormat;
-import lombok.Getter;
-import lombok.extern.slf4j.Slf4j;
-import org.apache.pulsar.functions.proto.InstanceCommunication;
-import org.apache.pulsar.functions.utils.Utils;
-
 import java.io.IOException;
 import java.io.StringWriter;
 import java.util.Arrays;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.pulsar.functions.proto.Function;
+import org.apache.pulsar.functions.proto.InstanceCommunication;
 
 @Slf4j
 public abstract class ComponentStatsManager implements AutoCloseable {
@@ -40,26 +36,26 @@ public abstract class ComponentStatsManager implements AutoCloseable {
 
     protected ScheduledFuture<?> scheduledFuture;
 
-    protected final CollectorRegistry collectorRegistry;
+    protected final FunctionCollectorRegistry collectorRegistry;
 
-    protected final EvictingQueue EMPTY_QUEUE = EvictingQueue.create(0);
+    protected final EvictingQueue emptyQueue = EvictingQueue.create(0);
 
-    public final static String USER_METRIC_PREFIX = "user_metric_";
+    public static final String USER_METRIC_PREFIX = "user_metric_";
 
-    public static final String[] metricsLabelNames = {"tenant", "namespace", "name", "instance_id", "cluster", "fqfn"};
+    public static final String[] METRICS_LABEL_NAMES =
+            {"tenant", "namespace", "name", "instance_id", "cluster", "fqfn"};
 
-    protected static final String[] exceptionMetricsLabelNames;
+    protected static final String[] EXCEPTION_METRICS_LABEL_NAMES;
 
     static {
-        exceptionMetricsLabelNames = Arrays.copyOf(metricsLabelNames, metricsLabelNames.length + 2);
-        exceptionMetricsLabelNames[metricsLabelNames.length] = "error";
-        exceptionMetricsLabelNames[metricsLabelNames.length + 1] = "ts";
+        EXCEPTION_METRICS_LABEL_NAMES = Arrays.copyOf(METRICS_LABEL_NAMES, METRICS_LABEL_NAMES.length + 1);
+        EXCEPTION_METRICS_LABEL_NAMES[METRICS_LABEL_NAMES.length] = "error";
     }
 
-    public static ComponentStatsManager getStatsManager(CollectorRegistry collectorRegistry,
+    public static ComponentStatsManager getStatsManager(FunctionCollectorRegistry collectorRegistry,
                                   String[] metricsLabels,
                                   ScheduledExecutorService scheduledExecutorService,
-                                  Utils.ComponentType componentType) {
+                                  Function.FunctionDetails.ComponentType componentType) {
         switch (componentType) {
             case FUNCTION:
                 return new FunctionStatsManager(collectorRegistry, metricsLabels, scheduledExecutorService);
@@ -72,21 +68,18 @@ public abstract class ComponentStatsManager implements AutoCloseable {
         }
     }
 
-    public ComponentStatsManager(CollectorRegistry collectorRegistry,
-                         String[] metricsLabels,
-                         ScheduledExecutorService scheduledExecutorService) {
+    public ComponentStatsManager(FunctionCollectorRegistry collectorRegistry,
+                                 String[] metricsLabels,
+                                 ScheduledExecutorService scheduledExecutorService) {
 
         this.collectorRegistry = collectorRegistry;
         this.metricsLabels = metricsLabels;
 
-        scheduledFuture = scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    reset();
-                } catch (Exception e) {
-                    log.error("Failed to reset metrics for 1min window", e);
-                }
+        scheduledFuture = scheduledExecutorService.scheduleAtFixedRate(() -> {
+            try {
+                reset();
+            } catch (Exception e) {
+                log.error("Failed to reset metrics for 1min window", e);
             }
         }, 1, 1, TimeUnit.MINUTES);
     }
@@ -107,9 +100,8 @@ public abstract class ComponentStatsManager implements AutoCloseable {
 
     public abstract void setLastInvocation(long ts);
 
-    public abstract void processTimeStart();
 
-    public abstract void processTimeEnd();
+    public abstract void processTimeEnd(long startTime);
 
     public abstract double getTotalProcessedSuccessfully();
 
@@ -133,18 +125,22 @@ public abstract class ComponentStatsManager implements AutoCloseable {
 
     public abstract double getAvgProcessLatency1min();
 
-    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation> getLatestUserExceptions();
+    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation>
+    getLatestUserExceptions();
 
-    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation> getLatestSystemExceptions();
+    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation>
+    getLatestSystemExceptions();
 
-    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation> getLatestSourceExceptions();
+    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation>
+    getLatestSourceExceptions();
 
-    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation> getLatestSinkExceptions();
+    public abstract EvictingQueue<InstanceCommunication.FunctionStatus.ExceptionInformation>
+    getLatestSinkExceptions();
 
     public String getStatsAsString() throws IOException {
         StringWriter outputWriter = new StringWriter();
 
-        TextFormat.write004(outputWriter, collectorRegistry.metricFamilySamples());
+        PrometheusTextFormat.write004(outputWriter, collectorRegistry.metricFamilySamples());
 
         return outputWriter.toString();
     }
@@ -152,7 +148,7 @@ public abstract class ComponentStatsManager implements AutoCloseable {
     protected InstanceCommunication.FunctionStatus.ExceptionInformation getExceptionInfo(Throwable th, long ts) {
         InstanceCommunication.FunctionStatus.ExceptionInformation.Builder exceptionInfoBuilder =
                 InstanceCommunication.FunctionStatus.ExceptionInformation.newBuilder().setMsSinceEpoch(ts);
-        String msg = th.getMessage();
+        String msg = String.format("[%s]: %s", th.getClass().getName(), th.getMessage());
         if (msg != null) {
             exceptionInfoBuilder.setExceptionString(msg);
         }

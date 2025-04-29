@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,24 +18,28 @@
  */
 package org.apache.pulsar.broker.service.nonpersistent;
 
-import static org.apache.pulsar.broker.service.Consumer.getBatchSizeforEntry;
-
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
-
+import lombok.Getter;
 import org.apache.bookkeeper.mledger.Entry;
-import org.apache.bookkeeper.mledger.util.Rate;
-import org.apache.pulsar.broker.ServiceConfiguration;
+import org.apache.pulsar.broker.loadbalance.extensions.data.BrokerLookupData;
 import org.apache.pulsar.broker.service.AbstractDispatcherMultipleConsumers;
 import org.apache.pulsar.broker.service.BrokerServiceException;
 import org.apache.pulsar.broker.service.BrokerServiceException.ConsumerBusyException;
 import org.apache.pulsar.broker.service.Consumer;
+import org.apache.pulsar.broker.service.EntryBatchSizes;
 import org.apache.pulsar.broker.service.RedeliveryTracker;
 import org.apache.pulsar.broker.service.RedeliveryTrackerDisabled;
+import org.apache.pulsar.broker.service.SendMessageInfo;
 import org.apache.pulsar.broker.service.Subscription;
-import org.apache.pulsar.common.api.proto.PulsarApi.CommandSubscribe.SubType;
-import org.apache.pulsar.utils.CopyOnWriteArrayList;
+import org.apache.pulsar.broker.service.persistent.DispatchRateLimiter;
+import org.apache.pulsar.common.api.proto.CommandSubscribe.SubType;
+import org.apache.pulsar.common.protocol.Commands;
+import org.apache.pulsar.common.stats.Rate;
+import org.apache.pulsar.common.util.FutureUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,64 +49,50 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
         implements NonPersistentDispatcher {
 
     private final NonPersistentTopic topic;
-    private final Subscription subscription;
+    protected final Subscription subscription;
 
     private CompletableFuture<Void> closeFuture = null;
-    private final String name;
-    private final Rate msgDrop;
-    protected static final AtomicIntegerFieldUpdater<NonPersistentDispatcherMultipleConsumers> TOTAL_AVAILABLE_PERMITS_UPDATER = AtomicIntegerFieldUpdater
+    @Getter
+    protected final String name;
+    protected final Rate msgDrop;
+    protected static final AtomicIntegerFieldUpdater<NonPersistentDispatcherMultipleConsumers>
+            TOTAL_AVAILABLE_PERMITS_UPDATER = AtomicIntegerFieldUpdater
             .newUpdater(NonPersistentDispatcherMultipleConsumers.class, "totalAvailablePermits");
     @SuppressWarnings("unused")
     private volatile int totalAvailablePermits = 0;
 
-    private final ServiceConfiguration serviceConfig;
     private final RedeliveryTracker redeliveryTracker;
 
     public NonPersistentDispatcherMultipleConsumers(NonPersistentTopic topic, Subscription subscription) {
+        super(subscription, topic.getBrokerService().pulsar().getConfiguration());
         this.topic = topic;
         this.subscription = subscription;
         this.name = topic.getName() + " / " + subscription.getName();
         this.msgDrop = new Rate();
-        this.serviceConfig = topic.getBrokerService().pulsar().getConfiguration();
         this.redeliveryTracker = RedeliveryTrackerDisabled.REDELIVERY_TRACKER_DISABLED;
     }
 
     @Override
-    public synchronized void addConsumer(Consumer consumer) throws BrokerServiceException {
+    public synchronized CompletableFuture<Void> addConsumer(Consumer consumer) {
         if (IS_CLOSED_UPDATER.get(this) == TRUE) {
-            log.warn("[{}] Dispatcher is already closed. Closing consumer ", name, consumer);
+            log.warn("[{}] Dispatcher is already closed. Closing consumer {}", name, consumer);
             consumer.disconnect();
-            return;
-        }
-
-        if (isConsumersExceededOnTopic()) {
-            log.warn("[{}] Attempting to add consumer to topic which reached max consumers limit", name);
-            throw new ConsumerBusyException("Topic reached max consumers limit");
+            return CompletableFuture.completedFuture(null);
         }
 
         if (isConsumersExceededOnSubscription()) {
             log.warn("[{}] Attempting to add consumer to subscription which reached max consumers limit", name);
-            throw new ConsumerBusyException("Subscription reached max consumers limit");
+            return FutureUtil.failedFuture(new ConsumerBusyException("Subscription reached max consumers limit"));
         }
 
         consumerList.add(consumer);
         consumerSet.add(consumer);
+        return CompletableFuture.completedFuture(null);
     }
 
-    private boolean isConsumersExceededOnTopic() {
-        final int maxConsumersPerTopic = serviceConfig.getMaxConsumersPerTopic();
-        if (maxConsumersPerTopic > 0 && maxConsumersPerTopic <= topic.getNumberOfConsumers()) {
-            return true;
-        }
-        return false;
-    }
-
-    private boolean isConsumersExceededOnSubscription() {
-        final int maxConsumersPerSubscription = serviceConfig.getMaxConsumersPerSubscription();
-        if (maxConsumersPerSubscription > 0 && maxConsumersPerSubscription <= consumerList.size()) {
-            return true;
-        }
-        return false;
+    @Override
+    protected boolean isConsumersExceededOnSubscription() {
+        return isConsumersExceededOnSubscription(topic, consumerList.size());
     }
 
     @Override
@@ -141,9 +131,12 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
-    public CompletableFuture<Void> close() {
+    public CompletableFuture<Void> close(boolean disconnectConsumers,
+                                         Optional<BrokerLookupData> assignedBrokerLookupData) {
         IS_CLOSED_UPDATER.set(this, TRUE);
-        return disconnectAllConsumers();
+        getRateLimiter().ifPresent(DispatchRateLimiter::close);
+        return disconnectConsumers
+                ? disconnectAllConsumers(false, assignedBrokerLookupData) : CompletableFuture.completedFuture(null);
     }
 
     @Override
@@ -162,18 +155,30 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
-    public synchronized CompletableFuture<Void> disconnectAllConsumers() {
+    public synchronized CompletableFuture<Void> disconnectAllConsumers(
+            boolean isResetCursor, Optional<BrokerLookupData> assignedBrokerLookupData) {
         closeFuture = new CompletableFuture<>();
         if (consumerList.isEmpty()) {
             closeFuture.complete(null);
         } else {
-            consumerList.forEach(Consumer::disconnect);
+            consumerList.forEach(consumer -> consumer.disconnect(isResetCursor, assignedBrokerLookupData));
         }
         return closeFuture;
     }
 
     @Override
+    public CompletableFuture<Void> disconnectActiveConsumers(boolean isResetCursor) {
+        return disconnectAllConsumers(isResetCursor);
+    }
+
+    @Override
+    public synchronized void resetCloseFuture() {
+        closeFuture = null;
+    }
+
+    @Override
     public void reset() {
+        resetCloseFuture();
         IS_CLOSED_UPDATER.set(this, FALSE);
     }
 
@@ -188,15 +193,21 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
-    public void sendMessages(List<Entry> entries) {
+    public synchronized void sendMessages(List<Entry> entries) {
         Consumer consumer = TOTAL_AVAILABLE_PERMITS_UPDATER.get(this) > 0 ? getNextConsumer() : null;
         if (consumer != null) {
-            TOTAL_AVAILABLE_PERMITS_UPDATER.addAndGet(this, -consumer.sendMessages(entries).getTotalSentMessages());
+            SendMessageInfo sendMessageInfo = SendMessageInfo.getThreadLocal();
+            EntryBatchSizes batchSizes = EntryBatchSizes.get(entries.size());
+            filterEntriesForConsumer(entries, batchSizes, sendMessageInfo, null, null, false, consumer);
+            consumer.sendMessages(entries, batchSizes, null, sendMessageInfo.getTotalMessages(),
+                    sendMessageInfo.getTotalBytes(), sendMessageInfo.getTotalChunkedMessages(), getRedeliveryTracker());
+
+            TOTAL_AVAILABLE_PERMITS_UPDATER.addAndGet(this, -sendMessageInfo.getTotalMessages());
         } else {
             entries.forEach(entry -> {
-                int totalMsgs = getBatchSizeforEntry(entry.getDataBuffer(), subscription, -1);
+                int totalMsgs = Commands.getNumberOfMessagesInBatch(entry.getDataBuffer(), subscription.toString(), -1);
                 if (totalMsgs > 0) {
-                    msgDrop.recordEvent();
+                    msgDrop.recordEvent(totalMsgs);
                 }
                 entry.release();
             });
@@ -209,13 +220,18 @@ public class NonPersistentDispatcherMultipleConsumers extends AbstractDispatcher
     }
 
     @Override
-    public Rate getMesssageDropRate() {
+    public Rate getMessageDropRate() {
         return msgDrop;
     }
 
     @Override
     public boolean isConsumerAvailable(Consumer consumer) {
         return consumer != null && consumer.getAvailablePermits() > 0 && consumer.isWritable();
+    }
+
+    @Override
+    protected void reScheduleRead() {
+        // No-op
     }
 
     private static final Logger log = LoggerFactory.getLogger(NonPersistentDispatcherMultipleConsumers.class);

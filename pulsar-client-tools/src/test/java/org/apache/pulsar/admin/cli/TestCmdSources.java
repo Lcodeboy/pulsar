@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,48 +20,40 @@ package org.apache.pulsar.admin.cli;
 
 import static org.apache.pulsar.common.naming.TopicName.DEFAULT_NAMESPACE;
 import static org.apache.pulsar.common.naming.TopicName.PUBLIC_TENANT;
-import static org.mockito.Matchers.eq;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.powermock.api.mockito.PowerMockito.mockStatic;
-
-import com.beust.jcommander.ParameterException;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertTrue;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
-
+import java.io.Closeable;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
-
-import lombok.extern.slf4j.Slf4j;
-
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.apache.pulsar.admin.cli.CmdSources.LocalSourceRunner;
 import org.apache.pulsar.admin.cli.utils.CmdUtils;
-import org.apache.pulsar.client.admin.Source;
 import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.client.admin.Sources;
 import org.apache.pulsar.common.functions.FunctionConfig;
 import org.apache.pulsar.common.functions.Resources;
+import org.apache.pulsar.common.functions.UpdateOptionsImpl;
+import org.apache.pulsar.common.io.BatchSourceConfig;
 import org.apache.pulsar.common.io.SourceConfig;
-import org.apache.pulsar.functions.utils.*;
+import org.apache.pulsar.common.util.ClassLoaderUtils;
 import org.mockito.Mockito;
-import org.powermock.api.mockito.PowerMockito;
-import org.powermock.core.classloader.annotations.PowerMockIgnore;
-import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.testng.Assert;
-import org.testng.IObjectFactory;
+import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.ObjectFactory;
 import org.testng.annotations.Test;
 
-@Slf4j
-@PrepareForTest({CmdFunctions.class})
-@PowerMockIgnore({ "javax.management.*", "javax.ws.*", "org.apache.logging.log4j.*", "org.apache.pulsar.io.core.*" })
 public class TestCmdSources {
-
-    @ObjectFactory
-    public IObjectFactory getObjectFactory() {
-        return new org.powermock.modules.testng.PowerMockObjectFactory();
-    }
-
     private static final String TENANT = "test-tenant";
     private static final String NAMESPACE = "test-namespace";
     private static final String NAME = "test";
@@ -75,36 +67,53 @@ public class TestCmdSources {
     private static final Double CPU = 100.0;
     private static final Long RAM = 1024L * 1024L;
     private static final Long DISK = 1024L * 1024L * 1024L;
-    private static final String SINK_CONFIG_STRING = "{\"created_at\":\"Mon Jul 02 00:33:15 +0000 2018\"}";
+    private static final String SINK_CONFIG_STRING =
+            "{\"created_at\":\"Mon Jul 02 00:33:15 +0000 2018\",\"int\":1000,\"int_string\":\"1000\",\"float\":1000.0,\"float_string\":\"1000.0\"}";
+    private static final String BATCH_SOURCE_CONFIG_STRING = "{ \"discoveryTriggererClassName\" : \"org.apache.pulsar.io.batchdiscovery.CronTriggerer\","
+			+ "\"discoveryTriggererConfig\": {\"cron\": \"5 0 0 0 0 *\"} }";
 
     private PulsarAdmin pulsarAdmin;
-    private Source source;
+    private Sources source;
     private CmdSources CmdSources;
     private CmdSources.CreateSource createSource;
     private CmdSources.UpdateSource updateSource;
     private CmdSources.LocalSourceRunner localSourceRunner;
     private CmdSources.DeleteSource deleteSource;
+    private ClassLoader oldContextClassLoader;
+    private ClassLoader jarClassLoader;
 
     @BeforeMethod
     public void setup() throws Exception {
-
         pulsarAdmin = mock(PulsarAdmin.class);
-        source = mock(Source.class);
-        when(pulsarAdmin.source()).thenReturn(source);
+        source = mock(Sources.class);
+        when(pulsarAdmin.sources()).thenReturn(source);
 
-        CmdSources = spy(new CmdSources(pulsarAdmin));
+        CmdSources = spy(new CmdSources(() -> pulsarAdmin));
         createSource = spy(CmdSources.getCreateSource());
         updateSource = spy(CmdSources.getUpdateSource());
         localSourceRunner = spy(CmdSources.getLocalSourceRunner());
         deleteSource = spy(CmdSources.getDeleteSource());
 
-        mockStatic(CmdFunctions.class);
-        PowerMockito.doNothing().when(localSourceRunner).runCmd();
+        Mockito.doNothing().when(localSourceRunner).runCmd();
         JAR_FILE_PATH = Thread.currentThread().getContextClassLoader().getResource(JAR_FILE_NAME).getFile();
-        Thread.currentThread().setContextClassLoader(Utils.loadJar(new File(JAR_FILE_PATH)));
+        jarClassLoader = ClassLoaderUtils.loadJar(new File(JAR_FILE_PATH));
+        oldContextClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(jarClassLoader);
     }
 
-    public SourceConfig getSourceConfig() {
+    @AfterMethod(alwaysRun = true)
+    public void cleanup() throws IOException {
+        if (jarClassLoader != null && jarClassLoader instanceof Closeable) {
+            ((Closeable) jarClassLoader).close();
+            jarClassLoader = null;
+        }
+        if (oldContextClassLoader != null) {
+            Thread.currentThread().setContextClassLoader(oldContextClassLoader);
+            oldContextClassLoader = null;
+        }
+    }
+
+    public SourceConfig getSourceConfig() throws JsonProcessingException {
         SourceConfig sourceConfig = new SourceConfig();
         sourceConfig.setTenant(TENANT);
         sourceConfig.setNamespace(NAMESPACE);
@@ -118,6 +127,10 @@ public class TestCmdSources {
         sourceConfig.setResources(new Resources(CPU, RAM, DISK));
         sourceConfig.setConfigs(createSource.parseConfigs(SINK_CONFIG_STRING));
         return sourceConfig;
+    }
+    
+    public BatchSourceConfig getBatchSourceConfig() {
+    	return createSource.parseBatchSourceConfigs(BATCH_SOURCE_CONFIG_STRING);
     }
 
     @Test
@@ -178,7 +191,7 @@ public class TestCmdSources {
         );
     }
 
-    @Test(expectedExceptions = ParameterException.class, expectedExceptionsMessageRegExp = "Source archive not specified")
+    @Test(expectedExceptions = CliCommand.ParameterException.class, expectedExceptionsMessageRegExp = "Source archive not specified")
     public void testMissingArchive() throws Exception {
         SourceConfig sourceConfig = getSourceConfig();
         sourceConfig.setArchive(null);
@@ -236,7 +249,7 @@ public class TestCmdSources {
         );
     }
 
-    public void testCmdSourceCliMissingArgs(
+    private void testCmdSourceCliMissingArgs(
             String tenant,
             String namespace,
             String name,
@@ -356,7 +369,7 @@ public class TestCmdSources {
         testCmdSourceConfigFile(testSourceConfig, expectedSourceConfig);
     }
 
-    @Test(expectedExceptions = ParameterException.class, expectedExceptionsMessageRegExp = "Source archive not specified")
+    @Test(expectedExceptions = CliCommand.ParameterException.class, expectedExceptionsMessageRegExp = "Source archive not specified")
     public void testCmdSourceConfigFileMissingJar() throws Exception {
         SourceConfig testSourceConfig = getSourceConfig();
         testSourceConfig.setArchive(null);
@@ -374,6 +387,39 @@ public class TestCmdSources {
         SourceConfig expectedSourceConfig = getSourceConfig();
         expectedSourceConfig.setArchive("/tmp/foo.jar");
         testCmdSourceConfigFile(testSourceConfig, expectedSourceConfig);
+    }
+
+    @Test
+    public void testBatchSourceConfigCorrect() throws Exception {
+    	SourceConfig testSourceConfig = getSourceConfig();
+    	testSourceConfig.setBatchSourceConfig(getBatchSourceConfig());
+    	
+    	SourceConfig expectedSourceConfig = getSourceConfig();
+        expectedSourceConfig.setBatchSourceConfig(getBatchSourceConfig());
+        testCmdSourceConfigFile(testSourceConfig, expectedSourceConfig);
+    }
+    
+    /*
+     * Test where the DiscoveryTriggererClassName is null
+     */
+    @Test(expectedExceptions = IllegalArgumentException.class, expectedExceptionsMessageRegExp = "Discovery Triggerer not specified")
+    public void testBatchSourceConfigMissingDiscoveryTriggererClassName() throws Exception {
+    	SourceConfig testSourceConfig = getSourceConfig();
+    	BatchSourceConfig batchSourceConfig = getBatchSourceConfig();
+    	batchSourceConfig.setDiscoveryTriggererClassName(null);
+    	testSourceConfig.setBatchSourceConfig(batchSourceConfig);
+    	
+    	SourceConfig expectedSourceConfig = getSourceConfig();
+        expectedSourceConfig.setBatchSourceConfig(batchSourceConfig);
+        testCmdSourceConfigFile(testSourceConfig, expectedSourceConfig);
+    }
+
+    @Test
+    public void testCmdSourceConfigFileInvalidSourceType() throws Exception {
+        SourceConfig sourceConfig = getSourceConfig();
+        sourceConfig.setSourceType("foo");
+        assertThatThrownBy(() -> testCmdSourceConfigFile(sourceConfig, null))
+                .hasMessageContaining("Invalid source type 'foo'");
     }
 
     public void testCmdSourceConfigFile(SourceConfig testSourceConfig, SourceConfig expectedSourceConfig) throws Exception {
@@ -407,6 +453,19 @@ public class TestCmdSources {
         verify(localSourceRunner).validateSourceConfigs(eq(expectedSourceConfig));
     }
 
+    @Test
+    public void testCmdSourcesThrowingExceptionOnFailure() throws Exception {
+        verifyNoSuchFileParameterException(createSource);
+        verifyNoSuchFileParameterException(updateSource);
+        verifyNoSuchFileParameterException(localSourceRunner);
+    }
+    
+    private void verifyNoSuchFileParameterException(org.apache.pulsar.admin.cli.CmdSources.SourceDetailsCommand command) {
+        command.sourceConfigFile = UUID.randomUUID().toString();
+        IllegalArgumentException e = Assert.expectThrows(IllegalArgumentException.class, command::processArguments);
+        assertTrue(e.getMessage().endsWith("(No such file or directory)"));
+    }
+    
 
     @Test
     public void testCliOverwriteConfigFile() throws Exception {
@@ -421,7 +480,7 @@ public class TestCmdSources {
         testSourceConfig.setParallelism(PARALLELISM + 1);
         testSourceConfig.setArchive(JAR_FILE_PATH + "-prime");
         testSourceConfig.setResources(new Resources(CPU + 1, RAM + 1, DISK + 1));
-        testSourceConfig.setConfigs(createSource.parseConfigs("{\"created_at-prime\":\"Mon Jul 02 00:33:15 +0000 2018\"}"));
+        testSourceConfig.setConfigs(createSource.parseConfigs("{\"created_at-prime\":\"Mon Jul 02 00:33:15 +0000 2018\", \"otherProperties\":{\"property1.value\":\"value1\",\"property2.value\":\"value2\"}}"));
 
 
         SourceConfig expectedSourceConfig = getSourceConfig();
@@ -450,7 +509,7 @@ public class TestCmdSources {
         );
     }
 
-    public void testMixCliAndConfigFile(
+    private void testMixCliAndConfigFile(
             String tenant,
             String namespace,
             String name,
@@ -569,5 +628,69 @@ public class TestCmdSources {
         deleteSource.runCmd();
 
         verify(source).deleteSource(eq(TENANT), eq(NAMESPACE), null);
+    }
+
+    @Test
+    public void testUpdateSource() throws Exception {
+
+        updateSource.name = "my-source";
+
+        updateSource.archive = "new-archive";
+
+        updateSource.processArguments();
+
+        updateSource.runCmd();
+
+        verify(source).updateSource(eq(SourceConfig.builder()
+                .tenant(PUBLIC_TENANT)
+                .namespace(DEFAULT_NAMESPACE)
+                .name(updateSource.name)
+                .archive(updateSource.archive)
+                .build()), eq(updateSource.archive), eq(new UpdateOptionsImpl()));
+
+
+        updateSource.archive = null;
+
+        updateSource.parallelism = 2;
+
+        updateSource.processArguments();
+
+        updateSource.updateAuthData = true;
+
+        UpdateOptionsImpl updateOptions = new UpdateOptionsImpl();
+        updateOptions.setUpdateAuthData(true);
+
+        updateSource.runCmd();
+
+        verify(source).updateSource(eq(SourceConfig.builder()
+                .tenant(PUBLIC_TENANT)
+                .namespace(DEFAULT_NAMESPACE)
+                .name(updateSource.name)
+                .parallelism(2)
+                .build()), eq(null), eq(updateOptions));
+
+
+
+    }
+
+    @Test
+    public void testParseConfigs() throws Exception {
+        SourceConfig testSourceConfig = getSourceConfig();
+        Map<String, Object> config = testSourceConfig.getConfigs();
+        Assert.assertEquals(config.get("int"), 1000);
+        Assert.assertEquals(config.get("int_string"), "1000");
+        Assert.assertEquals(config.get("float"), 1000.0);
+        Assert.assertEquals(config.get("float_string"), "1000.0");
+        Assert.assertEquals(config.get("created_at"), "Mon Jul 02 00:33:15 +0000 2018");
+    }
+
+    @Test
+    public void testExcludeDeprecatedOptions() throws Exception {
+        SourceConfig testSinkConfig = getSourceConfig();
+        LocalSourceRunner localSourceRunner = spy(new CmdSources(() -> pulsarAdmin)).getLocalSourceRunner();
+        localSourceRunner.sourceConfig = testSinkConfig;
+        localSourceRunner.deprecatedBrokerServiceUrl = "pulsar://localhost:6650";
+        List<String> localRunArgs = localSourceRunner.getLocalRunArgs();
+        assertFalse(String.join(",", localRunArgs).contains("--deprecated"));
     }
 }

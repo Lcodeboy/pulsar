@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,7 +18,7 @@
  */
 package org.apache.pulsar.tests.integration.topologies;
 
-import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -29,6 +29,7 @@ import lombok.Setter;
 import lombok.Singular;
 import lombok.experimental.Accessors;
 
+import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.tests.integration.containers.PulsarContainer;
 import org.testcontainers.containers.GenericContainer;
 
@@ -54,7 +55,7 @@ public class PulsarClusterSpec {
      * @return number of bookies.
      */
     @Default
-    int numBookies = 3;
+    int numBookies = 2;
 
     /**
      * Returns number of brokers.
@@ -81,12 +82,10 @@ public class PulsarClusterSpec {
     int numFunctionWorkers = 0;
 
     /**
-     * Enable a Presto Worker Node
-     *
-     * @return the flag whether presto worker is enabled
+     * Allow to query the last message
      */
     @Default
-    boolean enablePrestoWorker = false;
+    boolean queryLastMessage = false;
 
     /**
      * Returns the function runtime type.
@@ -103,7 +102,13 @@ public class PulsarClusterSpec {
      * @return the list of external services to start with the cluster.
      */
     @Singular
-    Map<String, GenericContainer<?>> externalServices = Collections.EMPTY_MAP;
+    Map<String, GenericContainer<?>> externalServices;
+
+    /**
+     * Specify envs for external services.
+     */
+    @Singular
+    Map<String, Map<String, String>> externalServiceEnvs;
 
     /**
      * Returns the flag whether to enable/disable container log.
@@ -120,10 +125,80 @@ public class PulsarClusterSpec {
     Map<String, String> classPathVolumeMounts = new TreeMap<>();
 
     /**
+     * Data container
+     */
+    @Builder.Default
+    GenericContainer<?> dataContainer = null;
+
+    /**
      * Pulsar Test Image Name
      *
      * @return the version of the pulsar test image to use
      */
     @Default
     String pulsarTestImage = PulsarContainer.DEFAULT_IMAGE_NAME;
+
+    /**
+     * Specify envs for proxy.
+     */
+    Map<String, String> proxyEnvs;
+
+    /**
+     * Specify envs for broker.
+     */
+    Map<String, String> brokerEnvs;
+
+    /**
+     * Specify envs for bookkeeper.
+     */
+    Map<String, String> bookkeeperEnvs;
+
+    /**
+     * Specify envs for function workers.
+     */
+    @Singular
+    Map<String, String> functionWorkerEnvs;
+
+    /**
+     * Specify mount files.
+     */
+    Map<String, String> proxyMountFiles;
+
+    /**
+     * Specify mount files.
+     */
+    Map<String, String> brokerMountFiles;
+
+    @Default
+    int maxMessageSize = Commands.DEFAULT_MAX_MESSAGE_SIZE;
+
+    /**
+     * Additional ports to expose on broker containers.
+     */
+    List<Integer> brokerAdditionalPorts;
+
+    /**
+     * Additional ports to expose on bookie containers.
+     */
+    List<Integer> bookieAdditionalPorts;
+
+    /**
+     * Additional ports to expose on proxy containers.
+     */
+    List<Integer> proxyAdditionalPorts;
+
+    /**
+     * Additional ports to expose on function workers.
+     */
+    @Singular
+    List<Integer> functionWorkerAdditionalPorts;
+
+    /**
+     * Enable TLS for connection.
+     */
+    @Default
+    boolean enableTls = false;
+
+    @Default
+    boolean enableOxia = false;
 }

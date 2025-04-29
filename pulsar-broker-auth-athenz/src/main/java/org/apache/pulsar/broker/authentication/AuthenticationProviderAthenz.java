@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,24 +18,20 @@
  */
 package org.apache.pulsar.broker.authentication;
 
-import java.io.IOException;
-import java.net.SocketAddress;
-import java.util.List;
-import java.security.PublicKey;
-
-import javax.naming.AuthenticationException;
-
-import org.apache.commons.lang3.StringUtils;
-import org.apache.pulsar.broker.authentication.AuthenticationDataSource;
-import org.apache.pulsar.broker.authentication.AuthenticationProvider;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
 import com.yahoo.athenz.auth.token.RoleToken;
 import com.yahoo.athenz.zpe.AuthZpeClient;
+import java.io.IOException;
+import java.net.SocketAddress;
+import java.security.PublicKey;
+import java.util.List;
+import javax.naming.AuthenticationException;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.broker.ServiceConfiguration;
+import org.apache.pulsar.broker.authentication.metrics.AuthenticationMetrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class AuthenticationProviderAthenz implements AuthenticationProvider {
 
@@ -47,8 +43,27 @@ public class AuthenticationProviderAthenz implements AuthenticationProvider {
     private List<String> domainNameList = null;
     private int allowedOffset = 30;
 
+    private AuthenticationMetrics authenticationMetrics;
+
+    public enum ErrorCode {
+        UNKNOWN,
+        NO_CLIENT,
+        NO_TOKEN,
+        NO_PUBLIC_KEY,
+        DOMAIN_MISMATCH,
+        INVALID_TOKEN,
+    }
+
     @Override
     public void initialize(ServiceConfiguration config) throws IOException {
+        initialize(Context.builder().config(config).build());
+    }
+
+    @Override
+    public void initialize(Context context) throws IOException {
+        authenticationMetrics = new AuthenticationMetrics(context.getOpenTelemetry(),
+                getClass().getSimpleName(), getAuthMethodName());
+        var config = context.getConfig();
         String domainNames;
         if (config.getProperty(DOMAIN_NAME_LIST) != null) {
             domainNames = (String) config.getProperty(DOMAIN_NAME_LIST);
@@ -82,56 +97,76 @@ public class AuthenticationProviderAthenz implements AuthenticationProvider {
     }
 
     @Override
+    public void incrementFailureMetric(Enum<?> errorCode) {
+        authenticationMetrics.recordFailure(errorCode);
+    }
+
+    @Override
     public String authenticate(AuthenticationDataSource authData) throws AuthenticationException {
         SocketAddress clientAddress;
         String roleToken;
+        ErrorCode errorCode = ErrorCode.UNKNOWN;
+        try {
 
-        if (authData.hasDataFromPeer()) {
-            clientAddress = authData.getPeerAddress();
-        } else {
-            throw new AuthenticationException("Authentication data source does not have a client address");
-        }
-
-        if (authData.hasDataFromCommand()) {
-            roleToken = authData.getCommandData();
-        } else if (authData.hasDataFromHttp()) {
-            roleToken = authData.getHttpHeader(AuthZpeClient.ZPE_TOKEN_HDR);
-        } else {
-            throw new AuthenticationException("Authentication data source does not have a role token");
-        }
-
-        if (roleToken == null) {
-            throw new AuthenticationException("Athenz token is null, can't authenticate");
-        }
-        if (roleToken.isEmpty()) {
-            throw new AuthenticationException("Athenz RoleToken is empty, Server is Using Athenz Authentication");
-        }
-        if (log.isDebugEnabled()) {
-            log.debug("Athenz RoleToken : [{}] received from Client: {}", roleToken, clientAddress);
-        }
-
-        RoleToken token = new RoleToken(roleToken);
-
-        if (!domainNameList.contains(token.getDomain())) {
-            throw new AuthenticationException(
-                    String.format("Athenz RoleToken Domain mismatch, Expected: %s, Found: %s", domainNameList.toString(), token.getDomain()));
-        }
-
-        // Synchronize for non-thread safe static calls inside athenz library
-        synchronized (this) {
-            PublicKey ztsPublicKey = AuthZpeClient.getZtsPublicKey(token.getKeyId());
-
-            if (ztsPublicKey == null) {
-                throw new AuthenticationException("Unable to retrieve ZTS Public Key");
-            }
-
-            if (token.validate(ztsPublicKey, allowedOffset, false, null)) {
-                log.debug("Athenz Role Token : {}, Authenticated for Client: {}", roleToken, clientAddress);
-                return token.getPrincipal();
+            if (authData.hasDataFromPeer()) {
+                clientAddress = authData.getPeerAddress();
             } else {
-                throw new AuthenticationException(
-                        String.format("Athenz Role Token Not Authenticated from Client: %s", clientAddress));
+                errorCode = ErrorCode.NO_CLIENT;
+                throw new AuthenticationException("Authentication data source does not have a client address");
             }
+
+            if (authData.hasDataFromCommand()) {
+                roleToken = authData.getCommandData();
+            } else if (authData.hasDataFromHttp()) {
+                roleToken = authData.getHttpHeader(AuthZpeClient.ZPE_TOKEN_HDR);
+            } else {
+                errorCode = ErrorCode.NO_TOKEN;
+                throw new AuthenticationException("Authentication data source does not have a role token");
+            }
+
+            if (roleToken == null) {
+                errorCode = ErrorCode.NO_TOKEN;
+                throw new AuthenticationException("Athenz token is null, can't authenticate");
+            }
+            if (roleToken.isEmpty()) {
+                errorCode = ErrorCode.NO_TOKEN;
+                throw new AuthenticationException("Athenz RoleToken is empty, Server is Using Athenz Authentication");
+            }
+            if (log.isDebugEnabled()) {
+                log.debug("Athenz RoleToken : [{}] received from Client: {}", roleToken, clientAddress);
+            }
+
+            RoleToken token = new RoleToken(roleToken);
+
+            if (!domainNameList.contains(token.getDomain())) {
+                errorCode = ErrorCode.DOMAIN_MISMATCH;
+                throw new AuthenticationException(
+                        String.format("Athenz RoleToken Domain mismatch, Expected: %s, Found: %s",
+                                domainNameList.toString(), token.getDomain()));
+            }
+
+            // Synchronize for non-thread safe static calls inside athenz library
+            synchronized (this) {
+                PublicKey ztsPublicKey = AuthZpeClient.getZtsPublicKey(token.getKeyId());
+
+                if (ztsPublicKey == null) {
+                    errorCode = ErrorCode.NO_PUBLIC_KEY;
+                    throw new AuthenticationException("Unable to retrieve ZTS Public Key");
+                }
+
+                if (token.validate(ztsPublicKey, allowedOffset, false, null)) {
+                    log.debug("Athenz Role Token : {}, Authenticated for Client: {}", roleToken, clientAddress);
+                    authenticationMetrics.recordSuccess();
+                    return token.getPrincipal();
+                } else {
+                    errorCode = ErrorCode.INVALID_TOKEN;
+                    throw new AuthenticationException(
+                            String.format("Athenz Role Token Not Authenticated from Client: %s", clientAddress));
+                }
+            }
+        } catch (AuthenticationException exception) {
+            incrementFailureMetric(errorCode);
+            throw exception;
         }
     }
 

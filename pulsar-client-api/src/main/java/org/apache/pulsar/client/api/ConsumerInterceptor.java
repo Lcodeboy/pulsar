@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,16 +18,22 @@
  */
 package org.apache.pulsar.client.api;
 
+import java.util.Set;
+import org.apache.pulsar.common.classification.InterfaceAudience;
+import org.apache.pulsar.common.classification.InterfaceStability;
+
 /**
  * A plugin interface that allows you to intercept (and possibly mutate)
  * messages received by the consumer.
- * <p>
- * A primary use case is to hook into consumer applications for custom
+ *
+ * <p>A primary use case is to hook into consumer applications for custom
  * monitoring, logging, etc.
- * <p>
- * Exceptions thrown by interceptor methods will be caught, logged, but
+ *
+ * <p>Exceptions thrown by interceptor methods will be caught, logged, but
  * not propagated further.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public interface ConsumerInterceptor<T> extends AutoCloseable {
 
     /**
@@ -36,18 +42,56 @@ public interface ConsumerInterceptor<T> extends AutoCloseable {
     void close();
 
     /**
+     * This method is called when a message arrives in the consumer.
+     *
+     * <p>This method provides visibility into the messages that have been received
+     * by the consumer but have not yet been processed. This can be useful for
+     * monitoring the state of the consumer's receiver queue and understanding
+     * the consumer's processing rate.
+     *
+     * <p>The method is allowed to modify the message, in which case the modified
+     * message will be returned.
+     *
+     * <p>Any exception thrown by this method will be caught by the caller, logged,
+     * but not propagated to the client.
+     *
+     * <p>Since the consumer may run multiple interceptors, a particular
+     * interceptor's <tt>onArrival</tt> callback will be called in the order
+     * specified by {@link ConsumerBuilder#intercept(ConsumerInterceptor[])}. The
+     * first interceptor in the list gets the consumed message, the following
+     * interceptor will be passed the message returned by the previous interceptor,
+     * and so on. Since interceptors are allowed to modify the message, interceptors
+     * may potentially get the messages already modified by other interceptors.
+     * However, building a pipeline of mutable interceptors that depend on the output
+     * of the previous interceptor is discouraged, because of potential side-effects
+     * caused by interceptors potentially failing to modify the message and throwing
+     * an exception. If one of the interceptors in the list throws an exception from
+     * <tt>onArrival</tt>, the exception is caught, logged, and the next interceptor
+     * is called with the message returned by the last successful interceptor in the
+     * list, or otherwise the original consumed message.
+     *
+     * @param consumer the consumer which contains the interceptor
+     * @param message the message that has arrived in the receiver queue
+     * @return the message that is either modified by the interceptor or the same
+     *         message passed into the method
+     */
+    default Message<T> onArrival(Consumer<T> consumer, Message<T> message) {
+        return message;
+    }
+
+    /**
      * This is called just before the message is returned by
      * {@link Consumer#receive()}, {@link MessageListener#received(Consumer,
      * Message)} or the {@link java.util.concurrent.CompletableFuture} returned by
      * {@link Consumer#receiveAsync()} completes.
-     * <p>
-     * This method is allowed to modify message, in which case the new message
+     *
+     * <p>This method is allowed to modify message, in which case the new message
      * will be returned.
-     * <p>
-     * Any exception thrown by this method will be caught by the caller, logged,
+     *
+     * <p>Any exception thrown by this method will be caught by the caller, logged,
      * but not propagated to client.
-     * <p>
-     * Since the consumer may run multiple interceptors, a particular
+     *
+     * <p>Since the consumer may run multiple interceptors, a particular
      * interceptor's
      * <tt>beforeConsume</tt> callback will be called in the order specified by
      * {@link ConsumerBuilder#intercept(ConsumerInterceptor[])}. The first
@@ -94,4 +138,33 @@ public interface ConsumerInterceptor<T> extends AutoCloseable {
      * @param exception the exception on acknowledge.
      */
     void onAcknowledgeCumulative(Consumer<T> consumer, MessageId messageId, Throwable exception);
+
+    /**
+     * This method will be called when a redelivery from a negative acknowledge occurs.
+     *
+     * <p>Any exception thrown by this method will be ignored by the caller.
+     *
+     * @param consumer the consumer which contains the interceptor
+     * @param messageIds the set of message ids to negatively ack
+     */
+    void onNegativeAcksSend(Consumer<T> consumer, Set<MessageId> messageIds);
+
+    /**
+     * This method will be called when a redelivery from an acknowledge timeout occurs.
+     *
+     * <p>Any exception thrown by this method will be ignored by the caller.
+     *
+     * @param consumer the consumer which contains the interceptor
+     * @param messageIds message to ack, null if acknowledge fail.
+     */
+    void onAckTimeoutSend(Consumer<T> consumer, Set<MessageId> messageIds);
+
+    /**
+     * This method is called when partitions of the topic (partitioned-topic) changes.
+     *
+     * @param topicName topic name
+     * @param partitions new updated number of partitions
+     */
+    default void onPartitionsChange(String topicName, int partitions) {
+    }
 }

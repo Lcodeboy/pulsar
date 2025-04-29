@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,8 +18,12 @@
  */
 package org.apache.pulsar.client.api;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import org.apache.pulsar.common.classification.InterfaceAudience;
+import org.apache.pulsar.common.classification.InterfaceStability;
 
 /**
  * {@link ReaderBuilder} is used to configure and create instances of {@link Reader}.
@@ -28,12 +32,14 @@ import java.util.concurrent.CompletableFuture;
  *
  * @since 2.0.0
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public interface ReaderBuilder<T> extends Cloneable {
 
     /**
      * Finalize the creation of the {@link Reader} instance.
-     * <p>
-     * This method will block until the reader is created successfully or an exception is thrown.
+     *
+     * <p>This method will block until the reader is created successfully or an exception is thrown.
      *
      * @return the reader instance
      * @throws PulsarClientException
@@ -44,8 +50,7 @@ public interface ReaderBuilder<T> extends Cloneable {
     /**
      * Finalize the creation of the {@link Reader} instance in asynchronous mode.
      *
-     * <p>
-     * This method will return a {@link CompletableFuture} that can be used to access the instance when it's ready.
+     * <p>This method will return a {@link CompletableFuture} that can be used to access the instance when it's ready.
      *
      * @return the reader instance
      * @throws PulsarClientException
@@ -56,8 +61,7 @@ public interface ReaderBuilder<T> extends Cloneable {
     /**
      * Load the configuration from provided <tt>config</tt> map.
      *
-     * <p>
-     * Example:
+     * <p>Example:
      *
      * <pre>{@code
      * Map<String, Object> config = new HashMap<>();
@@ -78,8 +82,8 @@ public interface ReaderBuilder<T> extends Cloneable {
 
     /**
      * Create a copy of the current {@link ReaderBuilder}.
-     * <p>
-     * Cloning the builder can be used to share an incomplete configuration and specialize it multiple times. For
+     *
+     * <p>Cloning the builder can be used to share an incomplete configuration and specialize it multiple times. For
      * example:
      *
      * <pre>{@code
@@ -97,14 +101,21 @@ public interface ReaderBuilder<T> extends Cloneable {
 
     /**
      * Specify the topic this reader will read from.
-     * <p>
-     * This argument is required when constructing the reader.
+     *
+     * <p>This argument is required when constructing the reader.
      *
      * @param topicName
      *            the name of the topic
      * @return the reader builder instance
      */
     ReaderBuilder<T> topic(String topicName);
+
+    /**
+     * Specify topics this reader will read from.
+     * @param topicNames
+     * @return
+     */
+    ReaderBuilder<T> topics(List<String> topicNames);
 
     /**
      * The initial reader positioning is done by specifying a message id. The options are:
@@ -116,15 +127,39 @@ public interface ReaderBuilder<T> extends Cloneable {
      * immediately <b>*after*</b> the specified message</li>
      * </ul>
      *
+     * <p>If the first message <b>*after*</b> the specified message is not the desired behaviour, use
+     * {@link ReaderBuilder#startMessageIdInclusive()}.
+     *
      * @param startMessageId the message id where the reader will be initially positioned on
      * @return the reader builder instance
      */
     ReaderBuilder<T> startMessageId(MessageId startMessageId);
 
     /**
-     * Sets a {@link ReaderListener} for the reader
-     * <p>
-     * When a {@link ReaderListener} is set, application will receive messages through it. Calls to
+     * The initial reader positioning can be set at specific timestamp by providing total rollback duration. so, broker
+     * can find a latest message that was published before given duration. <br/>
+     * eg: rollbackDuration in minute = 5 suggests broker to find message which was published 5 mins back and set the
+     * inital position on that messageId.
+     *
+     * @param rollbackDuration
+     *            duration which position should be rolled back.
+     * @return
+     */
+    ReaderBuilder<T> startMessageFromRollbackDuration(long rollbackDuration, TimeUnit timeunit);
+
+    /**
+     * Set the reader to include the given position of {@link ReaderBuilder#startMessageId(MessageId)}
+     *
+     * <p>This configuration option also applies for cursor reset operation {@link Reader#seek(MessageId)}.
+     *
+     * @return the reader builder instance
+     */
+    ReaderBuilder<T> startMessageIdInclusive();
+
+    /**
+     * Sets a {@link ReaderListener} for the reader.
+     *
+     * <p>When a {@link ReaderListener} is set, application will receive messages through it. Calls to
      * {@link Reader#readNext()} will not be allowed.
      *
      * @param readerListener
@@ -143,7 +178,31 @@ public interface ReaderBuilder<T> extends Cloneable {
     ReaderBuilder<T> cryptoKeyReader(CryptoKeyReader cryptoKeyReader);
 
     /**
-     * Sets the {@link ConsumerCryptoFailureAction} to specify
+     * Sets the default implementation of {@link CryptoKeyReader}.
+     *
+     * <p>Configure the key reader to be used to decrypt the message payloads.
+     *
+     * @param privateKey
+     *            the private key that is always used to decrypt message payloads.
+     * @return the reader builder instance
+     * @since 2.8.0
+     */
+    ReaderBuilder<T> defaultCryptoKeyReader(String privateKey);
+
+    /**
+     * Sets the default implementation of {@link CryptoKeyReader}.
+     *
+     * <p>Configure the key reader to be used to decrypt the message payloads.
+     *
+     * @param privateKeys
+     *            the map of private key names and their URIs used to decrypt message payloads.
+     * @return the reader builder instance
+     * @since 2.8.0
+     */
+    ReaderBuilder<T> defaultCryptoKeyReader(Map<String, String> privateKeys);
+
+    /**
+     * Sets the {@link ConsumerCryptoFailureAction} to specify.
      *
      * @param action
      *            The action to take when the decoding fails
@@ -152,13 +211,22 @@ public interface ReaderBuilder<T> extends Cloneable {
     ReaderBuilder<T> cryptoFailureAction(ConsumerCryptoFailureAction action);
 
     /**
+     * Sets a {@link MessageCrypto}.
+     *
+     * <p>Contains methods to encrypt/decrypt message for End to End Encryption.
+     *
+     * @param messageCrypto message Crypto Object
+     * @return ReaderBuilder instance
+     */
+    ReaderBuilder<T> messageCrypto(MessageCrypto messageCrypto);
+    /**
      * Sets the size of the consumer receive queue.
-     * <p>
-     * The consumer receive queue controls how many messages can be accumulated by the {@link Consumer} before the
+     *
+     * <p>The consumer receive queue controls how many messages can be accumulated by the {@link Consumer} before the
      * application calls {@link Consumer#receive()}. Using a higher value could potentially increase the consumer
      * throughput at the expense of bigger memory utilization.
-     * <p>
-     * Default value is {@code 1000} messages and should be good for most use cases.
+     *
+     * <p>Default value is {@code 1000} messages and should be good for most use cases.
      *
      * @param receiverQueueSize
      *            the new receiver queue size value
@@ -168,9 +236,9 @@ public interface ReaderBuilder<T> extends Cloneable {
 
     /**
      * Specify a reader name.
-     * <p>
-     * The reader name is purely informational and can used to track a particular reader in the reported stats. By
-     * default a randomly generated name is used.
+     *
+     * <p>The reader name is purely informational and can used to track a particular reader in the reported stats.
+     * By default a randomly generated name is used.
      *
      * @param readerName
      *            the name to use for the reader
@@ -187,17 +255,125 @@ public interface ReaderBuilder<T> extends Cloneable {
     ReaderBuilder<T> subscriptionRolePrefix(String subscriptionRolePrefix);
 
     /**
+     * Set the subscription name.
+     * <p>If subscriptionRolePrefix is set at the same time, this configuration will prevail
+     *
+     * @param subscriptionName
+     * @return the reader builder instance
+     */
+    ReaderBuilder<T> subscriptionName(String subscriptionName);
+
+    /**
      * If enabled, the reader will read messages from the compacted topic rather than reading the full message backlog
      * of the topic. This means that, if the topic has been compacted, the reader will only see the latest value for
      * each key in the topic, up until the point in the topic message backlog that has been compacted. Beyond that
      * point, the messages will be sent as normal.
-     * <p>
-     * readCompacted can only be enabled when reading from a persistent topic. Attempting to enable it on non-persistent
-     * topics will lead to the reader create call throwing a {@link PulsarClientException}.
+     *
+     * <p>readCompacted can only be enabled when reading from a persistent topic. Attempting to enable it
+     * on non-persistent topics will lead to the reader create call throwing a {@link PulsarClientException}.
      *
      * @param readCompacted
      *            whether to read from the compacted topic
      * @return the reader builder instance
      */
     ReaderBuilder<T> readCompacted(boolean readCompacted);
+
+    /**
+     * Set key hash range of the reader, broker will only dispatch messages which hash of the message key contains by
+     * the specified key hash range. Multiple key hash ranges can be specified on a reader.
+     *
+     * <p>Total hash range size is 65536, so the max end of the range should be less than or equal to 65535.
+     *
+     * @param ranges
+     *            key hash ranges for a reader
+     * @return the reader builder instance
+     */
+    ReaderBuilder<T> keyHashRange(Range... ranges);
+
+    /**
+     * Enable pooling of messages and the underlying data buffers.
+     * <p/>
+     * When pooling is enabled, the application is responsible for calling Message.release() after the handling of every
+     * received message. If “release()” is not called on a received message, there will be a memory leak. If an
+     * application attempts to use and already “released” message, it might experience undefined behavior (for example,
+     * memory corruption, deserialization error, etc.).
+     */
+    ReaderBuilder<T> poolMessages(boolean poolMessages);
+
+    /**
+     * If enabled, the reader will auto subscribe for partitions increasement.
+     * This is only for partitioned reader.
+     *
+     * @param autoUpdate
+     *            whether to auto update partition increasement
+     * @return the reader builder instance
+     */
+    ReaderBuilder<T> autoUpdatePartitions(boolean autoUpdate);
+
+    /**
+     * Set the interval of updating partitions <i>(default: 1 minute)</i>. This only works if autoUpdatePartitions is
+     * enabled.
+     *
+     * @param interval
+     *            the interval of updating partitions
+     * @param unit
+     *            the time unit of the interval.
+     * @return the reader builder instance
+     */
+    ReaderBuilder<T> autoUpdatePartitionsInterval(int interval, TimeUnit unit);
+
+    /**
+     * Intercept {@link Reader}.
+     *
+     * @param interceptors the list of interceptors to intercept the reader created by this builder.
+     * @return the reader builder instance
+     */
+    ReaderBuilder<T> intercept(ReaderInterceptor<T>... interceptors);
+
+    /**
+     * Consumer buffers chunk messages into memory until it receives all the chunks of the original message. While
+     * consuming chunk-messages, chunks from same message might not be contiguous in the stream and they might be mixed
+     * with other messages' chunks. so, consumer has to maintain multiple buffers to manage chunks coming from different
+     * messages. This mainly happens when multiple publishers are publishing messages on the topic concurrently or
+     * publisher failed to publish all chunks of the messages.
+     *
+     * <pre>
+     * eg: M1-C1, M2-C1, M1-C2, M2-C2
+     * Here, Messages M1-C1 and M1-C2 belong to original message M1, M2-C1 and M2-C2 messages belong to M2 message.
+     * </pre>
+     * Buffering large number of outstanding uncompleted chunked messages can create memory pressure and it can be
+     * guarded by providing this @maxPendingChunkedMessage threshold. Once, consumer reaches this threshold, it drops
+     * the outstanding unchunked-messages by silently acking or asking broker to redeliver later by marking it unacked.
+     * This behavior can be controlled by configuration: @autoAckOldestChunkedMessageOnQueueFull
+     *
+     * The default value is 10.
+     *
+     * @param maxPendingChunkedMessage
+     * @return
+     */
+    ReaderBuilder<T> maxPendingChunkedMessage(int maxPendingChunkedMessage);
+
+    /**
+     * Buffering large number of outstanding uncompleted chunked messages can create memory pressure and it can be
+     * guarded by providing this @maxPendingChunkedMessage threshold. Once, consumer reaches this threshold, it drops
+     * the outstanding unchunked-messages by silently acking if autoAckOldestChunkedMessageOnQueueFull is true else it
+     * marks them for redelivery.
+     *
+     * @default false
+     *
+     * @param autoAckOldestChunkedMessageOnQueueFull
+     * @return
+     */
+    ReaderBuilder<T> autoAckOldestChunkedMessageOnQueueFull(boolean autoAckOldestChunkedMessageOnQueueFull);
+
+    /**
+     * If producer fails to publish all the chunks of a message then consumer can expire incomplete chunks if consumer
+     * won't be able to receive all chunks in expire times (default 1 minute).
+     *
+     * @param duration
+     * @param unit
+     * @return
+     */
+    ReaderBuilder<T> expireTimeOfIncompleteChunkedMessage(long duration, TimeUnit unit);
+
 }

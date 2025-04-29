@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -25,7 +25,6 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.apache.pulsar.common.lookup.data.LookupData;
 import org.apache.pulsar.common.util.Codec;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.policies.data.loadbalancer.LoadManagerReport;
@@ -35,23 +34,22 @@ import org.apache.pulsar.policies.data.loadbalancer.ResourceUsage;
 import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage;
 import org.testng.annotations.Test;
 
-@Test
 public class LookupDataTest {
 
     @Test
-    void withConstructor() {
-		LookupData data = new LookupData("pulsar://localhost:8888", "pulsar://localhost:8884", "http://localhost:8080",
-				"http://localhost:8081");
+    public void withConstructor() {
+        LookupData data = new LookupData("pulsar://localhost:8888", "pulsar://localhost:8884", "http://localhost:8080",
+                                         "http://localhost:8081");
         assertEquals(data.getBrokerUrl(), "pulsar://localhost:8888");
         assertEquals(data.getHttpUrl(), "http://localhost:8080");
     }
 
     @SuppressWarnings("unchecked")
     @Test
-    void serializeToJsonTest() throws Exception {
-		LookupData data = new LookupData("pulsar://localhost:8888", "pulsar://localhost:8884", "http://localhost:8080",
-				"http://localhost:8081");
-        ObjectMapper mapper = ObjectMapperFactory.getThreadLocal();
+    public void serializeToJsonTest() throws Exception {
+        LookupData data = new LookupData("pulsar://localhost:8888", "pulsar://localhost:8884", "http://localhost:8080",
+                                         "http://localhost:8081");
+        ObjectMapper mapper = ObjectMapperFactory.getMapper().getObjectMapper();
         String json = mapper.writeValueAsString(data);
 
         Map<String, String> jsonMap = mapper.readValue(json, Map.class);
@@ -63,9 +61,9 @@ public class LookupDataTest {
         assertEquals(jsonMap.get("httpUrl"), "http://localhost:8080");
         assertEquals(jsonMap.get("httpUrlTls"), "http://localhost:8081");
     }
-    
+
     @Test
-    void testUrlEncoder() {
+    public void testUrlEncoder() {
         final String str = "specialCharacters_+&*%{}() \\/$@#^%";
         final String urlEncoded = Codec.encode(str);
         final String uriEncoded = urlEncoded.replaceAll("//+", "%20");
@@ -73,27 +71,26 @@ public class LookupDataTest {
         assertEquals(str, Codec.decode(urlEncoded));
         assertEquals(Codec.decode(urlEncoded), Codec.decode(uriEncoded));
     }
-    
+
     @Test
     public void testLoadReportSerialization() throws Exception {
         final String simpleLmBrokerUrl = "simple";
         final String simpleLmReportName = "simpleLoadManager";
         final String modularLmBrokerUrl = "modular";
         final SystemResourceUsage simpleLmSystemResourceUsage = new SystemResourceUsage();
-        final ResourceUsage resource = new ResourceUsage();
         final double usage = 55.0;
-        resource.usage = usage;
+        final ResourceUsage resource = new ResourceUsage(usage, 0);
         simpleLmSystemResourceUsage.bandwidthIn = resource;
-        
+
         LoadReport simpleReport = getSimpleLoadManagerLoadReport(simpleLmBrokerUrl, simpleLmReportName,
                 simpleLmSystemResourceUsage);
-        
+
         LocalBrokerData modularReport = getModularLoadManagerLoadReport(modularLmBrokerUrl, resource);
 
-        LoadManagerReport simpleLoadReport = ObjectMapperFactory.getThreadLocal().readValue(
-                ObjectMapperFactory.getThreadLocal().writeValueAsBytes(simpleReport), LoadManagerReport.class);
-        LoadManagerReport modularLoadReport = ObjectMapperFactory.getThreadLocal().readValue(
-                ObjectMapperFactory.getThreadLocal().writeValueAsBytes(modularReport), LoadManagerReport.class);
+        LoadManagerReport simpleLoadReport = ObjectMapperFactory.getMapper().reader().readValue(
+                ObjectMapperFactory.getMapper().writer().writeValueAsBytes(simpleReport), LoadManagerReport.class);
+        LoadManagerReport modularLoadReport = ObjectMapperFactory.getMapper().reader().readValue(
+                ObjectMapperFactory.getMapper().writer().writeValueAsBytes(modularReport), LoadManagerReport.class);
 
         assertEquals(simpleLoadReport.getWebServiceUrl(), simpleLmBrokerUrl);
         assertTrue(simpleLoadReport instanceof LoadReport);

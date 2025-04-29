@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,9 @@
  */
 package org.apache.pulsar.functions.secretsprovider;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * This defines a very simple Secrets Provider that looks up environment variable
  * thats named the same as secretName and fetches it.
@@ -25,11 +28,28 @@ package org.apache.pulsar.functions.secretsprovider;
 public class EnvironmentBasedSecretsProvider implements SecretsProvider {
 
     /**
-     * Fetches a secret
+     * Pattern to match ${secretName} in the value.
+     */
+    private static final Pattern interpolationPattern = Pattern.compile("\\$\\{(.+?)}");
+
+    /**
+     * Fetches a secret.
+     *
      * @return The actual secret
      */
     @Override
     public String provideSecret(String secretName, Object pathToSecret) {
         return System.getenv(secretName);
+    }
+
+    @Override
+    public String interpolateSecretForValue(String value) {
+        Matcher m = interpolationPattern.matcher(value);
+        if (m.matches()) {
+            String secretName = m.group(1);
+            // If the secret doesn't exist, we return null and don't override the current value.
+            return provideSecret(secretName, null);
+        }
+        return null;
     }
 }

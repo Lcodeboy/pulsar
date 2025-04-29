@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,19 +18,21 @@
  */
 package org.apache.bookkeeper.mledger.impl;
 
-import com.google.common.collect.ComparisonChain;
-
+import com.google.common.annotations.VisibleForTesting;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.Recycler;
 import io.netty.util.Recycler.Handle;
 import io.netty.util.ReferenceCounted;
-
 import org.apache.bookkeeper.client.api.LedgerEntry;
 import org.apache.bookkeeper.mledger.Entry;
+import org.apache.bookkeeper.mledger.Position;
+import org.apache.bookkeeper.mledger.PositionFactory;
 import org.apache.bookkeeper.mledger.util.AbstractCASReferenceCounted;
+import org.apache.bookkeeper.mledger.util.RangeCache;
 
-public final class EntryImpl extends AbstractCASReferenceCounted implements Entry, Comparable<EntryImpl>, ReferenceCounted {
+public final class EntryImpl extends AbstractCASReferenceCounted implements Entry, Comparable<EntryImpl>,
+        RangeCache.ValueWithKeyValidation<Position> {
 
     private static final Recycler<EntryImpl> RECYCLER = new Recycler<EntryImpl>() {
         @Override
@@ -40,12 +42,17 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
     };
 
     private final Handle<EntryImpl> recyclerHandle;
+    private long timestamp;
     private long ledgerId;
     private long entryId;
+    private Position position;
     ByteBuf data;
+
+    private Runnable onDeallocate;
 
     public static EntryImpl create(LedgerEntry ledgerEntry) {
         EntryImpl entry = RECYCLER.get();
+        entry.timestamp = System.nanoTime();
         entry.ledgerId = ledgerEntry.getLedgerId();
         entry.entryId = ledgerEntry.getEntryId();
         entry.data = ledgerEntry.getEntryBuffer();
@@ -54,9 +61,10 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
         return entry;
     }
 
-    // Used just for tests
+    @VisibleForTesting
     public static EntryImpl create(long ledgerId, long entryId, byte[] data) {
         EntryImpl entry = RECYCLER.get();
+        entry.timestamp = System.nanoTime();
         entry.ledgerId = ledgerId;
         entry.entryId = entryId;
         entry.data = Unpooled.wrappedBuffer(data);
@@ -66,6 +74,7 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
 
     public static EntryImpl create(long ledgerId, long entryId, ByteBuf data) {
         EntryImpl entry = RECYCLER.get();
+        entry.timestamp = System.nanoTime();
         entry.ledgerId = ledgerId;
         entry.entryId = entryId;
         entry.data = data;
@@ -74,8 +83,9 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
         return entry;
     }
 
-    public static EntryImpl create(PositionImpl position, ByteBuf data) {
+    public static EntryImpl create(Position position, ByteBuf data) {
         EntryImpl entry = RECYCLER.get();
+        entry.timestamp = System.nanoTime();
         entry.ledgerId = position.getLedgerId();
         entry.entryId = position.getEntryId();
         entry.data = data;
@@ -86,6 +96,7 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
 
     public static EntryImpl create(EntryImpl other) {
         EntryImpl entry = RECYCLER.get();
+        entry.timestamp = System.nanoTime();
         entry.ledgerId = other.ledgerId;
         entry.entryId = other.entryId;
         entry.data = other.data.retainedDuplicate();
@@ -97,6 +108,26 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
         this.recyclerHandle = recyclerHandle;
     }
 
+    public void onDeallocate(Runnable r) {
+        if (this.onDeallocate == null) {
+            this.onDeallocate = r;
+        } else {
+            // this is not expected to happen
+            Runnable previous = this.onDeallocate;
+            this.onDeallocate = () -> {
+                try {
+                    previous.run();
+                } finally {
+                    r.run();
+                }
+            };
+        }
+    }
+
+    public long getTimestamp() {
+        return timestamp;
+    }
+
     @Override
     public ByteBuf getDataBuffer() {
         return data;
@@ -104,7 +135,7 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
 
     @Override
     public byte[] getData() {
-        byte[] array = new byte[(int) data.readableBytes()];
+        byte[] array = new byte[data.readableBytes()];
         data.getBytes(data.readerIndex(), array);
         return array;
     }
@@ -123,8 +154,11 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
     }
 
     @Override
-    public PositionImpl getPosition() {
-        return new PositionImpl(ledgerId, entryId);
+    public Position getPosition() {
+        if (position == null) {
+            position = PositionFactory.create(ledgerId, entryId);
+        }
+        return position;
     }
 
     @Override
@@ -139,7 +173,15 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
 
     @Override
     public int compareTo(EntryImpl other) {
-        return ComparisonChain.start().compare(ledgerId, other.ledgerId).compare(entryId, other.entryId).result();
+        if (this.ledgerId != other.ledgerId) {
+            return this.ledgerId < other.ledgerId ? -1 : 1;
+        }
+
+        if (this.entryId != other.entryId) {
+            return this.entryId < other.entryId ? -1 : 1;
+        }
+
+        return 0;
     }
 
     @Override
@@ -150,11 +192,24 @@ public final class EntryImpl extends AbstractCASReferenceCounted implements Entr
     @Override
     protected void deallocate() {
         // This method is called whenever the ref-count of the EntryImpl reaches 0, so that now we can recycle it
+        if (onDeallocate != null) {
+            try {
+                onDeallocate.run();
+            } finally {
+                onDeallocate = null;
+            }
+        }
         data.release();
         data = null;
+        timestamp = -1;
         ledgerId = -1;
         entryId = -1;
+        position = null;
         recyclerHandle.recycle(this);
     }
 
+    @Override
+    public boolean matchesKey(Position key) {
+        return key.compareTo(ledgerId, entryId) == 0;
+    }
 }

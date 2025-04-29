@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,12 +19,19 @@
 package org.apache.pulsar.client.api;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
-
+import com.google.common.util.concurrent.RateLimiter;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -32,19 +39,20 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-
+import lombok.Cleanup;
+import org.apache.pulsar.broker.ServiceConfiguration;
+import org.apache.pulsar.broker.stats.NamespaceStats;
 import org.apache.pulsar.client.admin.PulsarAdminException;
+import org.awaitility.Awaitility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.RateLimiter;
-
+@Test(groups = "broker-api")
 public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
     private static final Logger log = LoggerFactory.getLogger(SimpleProducerConsumerStatTest.class);
 
@@ -55,7 +63,16 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         super.producerBaseSetup();
     }
 
-    @AfterMethod
+    @Override
+    protected ServiceConfiguration getDefaultConf() {
+        ServiceConfiguration conf = super.getDefaultConf();
+        // wait for shutdown of the broker, this prevents flakiness which could be caused by metrics being
+        // unregistered asynchronously. This impacts the execution of the next test method if this would be happening.
+        conf.setBrokerShutdownTimeoutMs(5000L);
+        return conf;
+    }
+
+    @AfterMethod(alwaysRun = true)
     @Override
     protected void cleanup() throws Exception {
         super.internalCleanup();
@@ -69,6 +86,11 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
     @DataProvider(name = "batch_with_timeout")
     public Object[][] ackTimeoutSecProvider() {
         return new Object[][] { { 0, 0 }, { 0, 2 }, { 1000, 0 }, { 1000, 2 } };
+    }
+
+    @DataProvider(name = "batchingEnabled")
+    public Object[][] batchingEnabled() {
+        return new Object[][] { { true }, { false } };
     }
 
     @Test(dataProvider = "batch_with_timeout")
@@ -101,7 +123,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
 
         Message<byte[]> msg = null;
-        Set<String> messageSet = Sets.newHashSet();
+        Set<String> messageSet = new HashSet<>();
         for (int i = 0; i < numMessages; i++) {
             msg = consumer.receive(5, TimeUnit.SECONDS);
             String receivedMessage = new String(msg.getData());
@@ -140,7 +162,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
 
         Producer<byte[]> producer = producerBuilder.create();
-        List<Future<MessageId>> futures = Lists.newArrayList();
+        List<Future<MessageId>> futures = new ArrayList<>();
 
         int numMessages = 50;
         // Asynchronously produce messages
@@ -156,7 +178,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
 
         Message<byte[]> msg = null;
-        Set<String> messageSet = Sets.newHashSet();
+        Set<String> messageSet = new HashSet<>();
         for (int i = 0; i < numMessages; i++) {
             msg = consumer.receive(5, TimeUnit.SECONDS);
             String receivedMessage = new String(msg.getData());
@@ -198,7 +220,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
 
         Producer<byte[]> producer = producerBuilder.create();
-        List<Future<MessageId>> futures = Lists.newArrayList();
+        List<Future<MessageId>> futures = new ArrayList<>();
 
         int numMessages = 101;
         // Asynchronously produce messages
@@ -214,7 +236,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
         Message<byte[]> msg = null;
         CompletableFuture<Message<byte[]>> future_msg = null;
-        Set<String> messageSet = Sets.newHashSet();
+        Set<String> messageSet = new HashSet<>();
         for (int i = 0; i < numMessages; i++) {
             future_msg = consumer.receiveAsync();
             Thread.sleep(10);
@@ -261,7 +283,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
 
         Producer<byte[]> producer = producerBuilder.create();
-        List<Future<MessageId>> futures = Lists.newArrayList();
+        List<Future<MessageId>> futures = new ArrayList<>();
 
         // Asynchronously produce messages
         for (int i = 0; i < numMessages; i++) {
@@ -276,7 +298,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
         Thread.sleep(5000);
         log.info("Waiting for message listener to ack all messages");
-        assertEquals(latch.await(numMessages, TimeUnit.SECONDS), true, "Timed out waiting for message listener acks");
+        assertTrue(latch.await(numMessages, TimeUnit.SECONDS),"Timed out waiting for message listener acks");
         consumer.close();
         producer.close();
         validatingLogInfo(consumer, producer, true);
@@ -293,7 +315,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         ProducerBuilder<byte[]> producerBuilder = pulsarClient.newProducer()
                 .topic("persistent://my-property/tp1/my-ns/my-topic5").sendTimeout(1, TimeUnit.SECONDS);
         if (batchMessageDelayMs != 0) {
-            producerBuilder.enableBatching(true).batchingMaxPublishDelay(2 * batchMessageDelayMs, TimeUnit.MILLISECONDS)
+            producerBuilder.enableBatching(true).batchingMaxPublishDelay(2L * batchMessageDelayMs, TimeUnit.MILLISECONDS)
                     .batchingMaxMessages(5);
         }
 
@@ -330,6 +352,7 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         log.info("-- Exiting {} test --", methodName);
     }
 
+    @Test
     public void testBatchMessagesRateOut() throws PulsarClientException, InterruptedException, PulsarAdminException {
         log.info("-- Starting {} test --", methodName);
         String topicName = "persistent://my-property/cluster/my-ns/testBatchMessagesRateOut";
@@ -352,13 +375,13 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         Thread.sleep(2000); // Two seconds sleep
         runTest.set(false);
         pulsar.getBrokerService().updateRates();
-        double actualRate = admin.topics().getStats(topicName).msgRateOut;
+        double actualRate = admin.topics().getStats(topicName).getMsgRateOut();
         assertTrue(actualRate > (produceRate / batchSize));
         consumer.unsubscribe();
         log.info("-- Exiting {} test --", methodName);
     }
 
-    public void validatingLogInfo(Consumer<?> consumer, Producer<?> producer, boolean verifyAckCount)
+    private void validatingLogInfo(Consumer<?> consumer, Producer<?> producer, boolean verifyAckCount)
             throws InterruptedException {
         // Waiting for recording last stat info
         Thread.sleep(1000);
@@ -372,4 +395,303 @@ public class SimpleProducerConsumerStatTest extends ProducerConsumerBase {
         }
     }
 
+    @Test
+    public void testAddBrokerLatencyStats() throws Exception {
+
+        log.info("-- Starting {} test --", methodName);
+
+        ProducerBuilder<byte[]> producerBuilder = pulsarClient.newProducer()
+                .topic("persistent://my-property/tp1/my-ns/my-topic1");
+
+        Producer<byte[]> producer = producerBuilder.create();
+
+        int numMessages = 120;
+        for (int i = 0; i < numMessages; i++) {
+            String message = "my-message-" + i;
+            producer.send(message.getBytes());
+        }
+
+        pulsar.getBrokerService().updateRates();
+
+        String json = admin.brokerStats().getMetrics();
+        JsonArray metrics = new Gson().fromJson(json, JsonArray.class);
+
+        boolean latencyCaptured = false;
+        for (int i = 0; i < metrics.size(); i++) {
+            try {
+                String data = metrics.get(i).getAsJsonObject().get("metrics").toString();
+                if (data.contains(NamespaceStats.BRK_ADD_ENTRY_LATENCY_PREFIX)) {
+                    JsonObject stat = metrics.get(i).getAsJsonObject().get("metrics").getAsJsonObject();
+                    for (String key : stat.keySet()) {
+                        if (key.startsWith(NamespaceStats.BRK_ADD_ENTRY_LATENCY_PREFIX)) {
+                            double val = stat.get(key).getAsDouble();
+                            if (val > 0.0) {
+                                latencyCaptured = true;
+                            }
+                        }
+                    }
+                    System.out.println(stat.toString());
+                }
+            } catch (Exception e) {
+                //Ok
+            }
+        }
+
+        assertTrue(latencyCaptured);
+        producer.close();
+        log.info("-- Exiting {} test --", methodName);
+    }
+
+    @Test(dataProvider =  "batchingEnabled")
+    public void testProducerPendingQueueSizeStats(boolean batchingEnabled) throws Exception {
+        log.info("-- Starting {} test --", methodName);
+        ProducerBuilder<byte[]> producerBuilder = pulsarClient.newProducer()
+                .topic("persistent://my-property/tp1/my-ns/my-topic1");
+
+        @Cleanup
+        Producer<byte[]> producer = producerBuilder.enableBatching(batchingEnabled).create();
+
+        stopBroker();
+
+        int numMessages = 120;
+        for (int i = 0; i < numMessages; i++) {
+            String message = "my-message-" + i;
+            producer.sendAsync(message.getBytes());
+        }
+        Awaitility.await().timeout(2, TimeUnit.MINUTES)
+                .until(() -> producer.getStats().getPendingQueueSize() == numMessages);
+        assertEquals(producer.getStats().getPendingQueueSize(), numMessages);
+    }
+
+    /**
+     * This test verifies partitioned topic stats for producer and consumer.
+     * @throws Exception
+     */
+    @Test
+    public void testPartitionTopicStats() throws Exception {
+        log.info("-- Starting {} test --", methodName);
+
+        String topicName = "persistent://my-property/my-ns/testPartitionTopicStats";
+        int numPartitions = 10;
+        admin.topics().createPartitionedTopic(topicName, numPartitions);
+
+        ConsumerBuilder<byte[]> consumerBuilder = pulsarClient.newConsumer().topic(topicName)
+                .subscriptionName("my-subscriber-name");
+
+        Consumer<byte[]> consumer = consumerBuilder.subscribe();
+
+        ProducerBuilder<byte[]> producerBuilder = pulsarClient.newProducer().enableBatching(false).topic(topicName);
+
+        Producer<byte[]> producer = producerBuilder.create();
+
+        int numMessages = 20;
+        for (int i = 0; i < numMessages; i++) {
+            String message = "my-message-" + i;
+            producer.send(message.getBytes());
+        }
+
+        Message<byte[]> msg = null;
+        Set<String> messageSet = new HashSet<>();
+        for (int i = 0; i < numMessages; i++) {
+            msg = consumer.receive(5, TimeUnit.SECONDS);
+            String receivedMessage = new String(msg.getData());
+            log.info("Received message: [{}]", receivedMessage);
+            Assert.assertTrue(messageSet.add(receivedMessage), "Received duplicate message " + receivedMessage);
+        }
+        Assert.assertEquals(messageSet.size(), numMessages);
+
+        // Acknowledge the consumption of all messages at once
+        consumer.acknowledgeCumulative(msg);
+
+        ConsumerStats cStat = consumer.getStats();
+        ProducerStats pStat = producer.getStats();
+        retryStrategically((test) -> !pStat.getPartitionStats().isEmpty(), 5, 100);
+        retryStrategically((test) -> !cStat.getPartitionStats().isEmpty(), 5, 100);
+        Map<String, ProducerStats> prodStatsMap = pStat.getPartitionStats();
+        Map<String, ConsumerStats> consStatsMap = cStat.getPartitionStats();
+        assertFalse(prodStatsMap.isEmpty());
+        assertFalse(consStatsMap.isEmpty());
+        for (int i = 0; i < numPartitions; i++) {
+            String topic = topicName + "-partition-" + i;
+            assertTrue(prodStatsMap.containsKey(topic));
+            assertTrue(consStatsMap.containsKey(topic));
+        }
+
+        consumer.close();
+        producer.close();
+
+        log.info("-- Exiting {} test --", methodName);
+    }
+
+    @Test
+    public void testMsgRateExpired() throws Exception {
+        log.info("-- Starting {} test --", methodName);
+
+        String topicName = "persistent://my-property/tp1/my-ns/" + methodName;
+        String subName = "my-sub";
+        admin.topics().createSubscription(topicName, subName, MessageId.latest);
+
+        @Cleanup
+        Producer<byte[]> producer = pulsarClient.newProducer()
+                .topic(topicName)
+                .enableBatching(false)
+                .create();
+
+        int numMessages = 100;
+        for (int i = 0; i < numMessages; i++) {
+            String message = "my-message-" + i;
+            producer.send(message.getBytes());
+        }
+
+        Thread.sleep(2000);
+        admin.topics().expireMessages(topicName, subName, 1);
+        pulsar.getBrokerService().updateRates();
+
+        Awaitility.await().ignoreExceptions().timeout(10, TimeUnit.SECONDS)
+                .until(() -> pulsar.getBrokerService().getTopicStats().get(topicName).getSubscriptions().get(subName).getTotalMsgExpired() > 0);
+
+        Awaitility.await().ignoreExceptions().timeout(10, TimeUnit.SECONDS).until(() -> {
+            pulsar.getBrokerService().updateRates();
+            return pulsar.getBrokerService().getTopicStats().get(topicName).getSubscriptions().get(subName).getMsgRateExpired() < 0.001;
+        });
+
+        assertEquals(pulsar.getBrokerService().getTopicStats().get(topicName).getSubscriptions().get(subName).getMsgRateExpired(),
+                0.0, 0.001);
+        assertEquals(pulsar.getBrokerService().getTopicStats().get(topicName).getSubscriptions().get(subName).getTotalMsgExpired(),
+                numMessages);
+
+        log.info("-- Exiting {} test --", methodName);
+    }
+
+    @Test
+    public void testRetryLetterAndDeadLetterStats() throws PulsarClientException, InterruptedException {
+        final String topicName = "persistent://my-property/my-ns/testRetryLetterAndDeadLetterStats";
+
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Shared)
+                .negativeAckRedeliveryDelay(100, TimeUnit.MILLISECONDS)
+                .enableRetry(true)
+                .deadLetterPolicy(DeadLetterPolicy.builder()
+                        .maxRedeliverCount(3)
+                        .retryLetterTopic("persistent://my-property/my-ns/retry-topic")
+                        .deadLetterTopic("persistent://my-property/my-ns/dlq-topic")
+                        .build())
+                .subscriptionName("sub")
+                .subscribe();
+
+        Producer<byte[]> producer = pulsarClient.newProducer()
+                .topic(topicName)
+                .create();
+
+        final int messages = 1;
+        for (int i = 0; i < messages; i++) {
+            producer.send(("message-" + i).getBytes());
+        }
+
+        for (int i = 0; i < messages * 4; i++) {
+            // nack and reconsumeLater
+            Message msg = consumer.receive(1, TimeUnit.SECONDS);
+            if (msg != null) {
+                consumer.reconsumeLater(msg, 100, TimeUnit.MILLISECONDS);
+            }
+        }
+
+        Awaitility.await().untilAsserted(() -> {
+            ConsumerStats stats = consumer.getStats();
+            ProducerStats retryStats = stats.getRetryLetterProducerStats();
+            ProducerStats deadLetterStats = stats.getDeadLetterProducerStats();
+            assertNotNull(retryStats);
+            assertNotNull(deadLetterStats);
+            assertEquals(retryStats.getTotalMsgsSent(), 3);
+            assertEquals(deadLetterStats.getTotalMsgsSent(), 1);
+        });
+    }
+    @Test
+    public void testDeadLetterStats() throws PulsarClientException, InterruptedException {
+        final String topicName = "persistent://my-property/my-ns/testDeadLetterStats";
+
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Shared)
+                .negativeAckRedeliveryDelay(100, TimeUnit.MILLISECONDS)
+                .deadLetterPolicy(DeadLetterPolicy.builder()
+                        .maxRedeliverCount(1)
+                        .deadLetterTopic("persistent://my-property/my-ns/dlq-topic")
+                        .build())
+                .subscriptionName("sub")
+                .subscribe();
+
+        Producer<byte[]> producer = pulsarClient.newProducer()
+                .topic(topicName)
+                .create();
+
+        final int messages = 1;
+        for (int i = 0; i < messages; i++) {
+            producer.send(("message-" + i).getBytes());
+        }
+
+        for (int i = 0; i < messages * 2; i++) {
+            // nack and reconsumeLater
+            Message msg = consumer.receive(1, TimeUnit.SECONDS);
+            if (msg != null) {
+                consumer.negativeAcknowledge(msg);
+            }
+        }
+
+        Awaitility.await().untilAsserted(() -> {
+            ConsumerStats stats = consumer.getStats();
+            ProducerStats dlqStats = stats.getDeadLetterProducerStats();
+            assertNotNull(dlqStats);
+            assertEquals(dlqStats.getTotalMsgsSent(), 1);
+        });
+    }
+
+    @Test
+    public void testPartitionedRetryLetterAndDeadLetterStats()
+            throws PulsarClientException, InterruptedException, PulsarAdminException {
+        final String topicName = "persistent://my-property/my-ns/testPartitionedRetryLetterAndDeadLetterStats";
+
+        admin.topics().createPartitionedTopic(topicName, 10);
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionType(SubscriptionType.Shared)
+                .negativeAckRedeliveryDelay(100, TimeUnit.MILLISECONDS)
+                .enableRetry(true)
+                .deadLetterPolicy(DeadLetterPolicy.builder()
+                        .maxRedeliverCount(3)
+                        .retryLetterTopic("persistent://my-property/my-ns/retry-topic")
+                        .deadLetterTopic("persistent://my-property/my-ns/dlq-topic")
+                        .build())
+                .subscriptionName("sub")
+                .subscribe();
+
+        Producer<byte[]> producer = pulsarClient.newProducer()
+                .topic(topicName)
+                .messageRoutingMode(MessageRoutingMode.RoundRobinPartition)
+                .create();
+
+        final int messages = 30;
+        for (int i = 0; i < messages; i++) {
+            producer.send(("message-" + i).getBytes());
+        }
+
+        for (int i = 0; i < messages * 4; i++) {
+            // nack and reconsumeLater
+            Message msg = consumer.receive(1, TimeUnit.SECONDS);
+            if (msg != null) {
+                consumer.reconsumeLater(msg, 100, TimeUnit.MILLISECONDS);
+            }
+        }
+
+        Awaitility.await().untilAsserted(() -> {
+            ConsumerStats stats = consumer.getStats();
+            ProducerStats retryStats = stats.getRetryLetterProducerStats();
+            ProducerStats deadLetterStats = stats.getDeadLetterProducerStats();
+            assertNotNull(retryStats);
+            assertNotNull(deadLetterStats);
+            assertEquals(retryStats.getTotalMsgsSent(), 3 * messages);
+            assertEquals(deadLetterStats.getTotalMsgsSent(), messages);
+        });
+    }
 }
